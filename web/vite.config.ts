@@ -9,7 +9,7 @@ import { fileURLToPath, URL } from "node:url";
 /// `BACKEND_ORIGIN` points the proxy at the Rust server, which may live on
 /// another machine — the browser then only ever talks to Vite (same-origin, so
 /// no CORS and no `ALLOWED_ORIGIN` needed):
-///   BACKEND_ORIGIN=http://10.10.10.98:8080 npm run dev
+///   BACKEND_ORIGIN=http://192.168.1.20:8080 npm run dev
 const backend = process.env.BACKEND_ORIGIN ?? "http://127.0.0.1:8080";
 
 const rest = [
@@ -37,7 +37,7 @@ export default defineConfig({
   server: {
     port: 5173,
     // Listen on all interfaces, so the dev server is reachable from a phone or
-    // another machine on the LAN (`http://10.10.10.98:5173`). Vite's default is
+    // another machine on the LAN (`http://192.168.1.20:5173`). Vite's default is
     // `localhost`, which binds loopback only and refuses those connections.
     // Override with `--host <addr>` for a specific interface.
     host: true,

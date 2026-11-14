@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 
 /// Docs show the public deployment unless the build is pointed elsewhere, so a
 /// self-hosted copy documents its own API instead of this one.
-const BASE = API_BASE || "http://localhost";
+const BASE = API_BASE || "http://localhost:8080";
 
 const CURL = `# Search
 curl "${BASE}/api/search?q=lofi&limit=5"
