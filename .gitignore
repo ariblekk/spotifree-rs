@@ -9,6 +9,20 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+# Frontend (Vite) build artifacts
+web/node_modules/
+web/dist/
+
+# Local Vite env (`.env.example` is the committed template)
+web/.env
+web/.env.local
+
+# Compose env (`.env.docker.example` is the committed template)
+.env
+
+# Local assistant/editor config
+.commandcode/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

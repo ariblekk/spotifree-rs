@@ -1,0 +1,148 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* Geist and Geist Mono (Vercel, SIL OFL) are self-hosted through
+   `@fontsource-variable/*`, so nothing is fetched from a third party and the CSP
+   can stay `font-src 'self'`. */
+
+@custom-variant dark (&:is(.dark *));
+
+/* shadcn tokens, themed for spotifree-rs: near-black paper, bone-white ink,
+   lime (`#ccf05b`) as the single brand accent. Square corners (`--radius: 0`)
+   keep the lrc.red look the original stylesheet had. */
+:root {
+  color-scheme: dark;
+  --background: #0d0d0d;
+  --foreground: #f5f5f5;
+  --card: #141414;
+  --card-foreground: #f5f5f5;
+  --popover: #141414;
+  --popover-foreground: #f5f5f5;
+  --primary: #ccf05b;
+  --primary-foreground: #111111;
+  --secondary: #1c1c1c;
+  --secondary-foreground: #f5f5f5;
+  --muted: #1c1c1c;
+  --muted-foreground: #9a9a9a;
+  --accent: #202020;
+  --accent-foreground: #f5f5f5;
+  --destructive: #ff4d4d;
+  --border: #2a2a2a;
+  --input: #2a2a2a;
+  --ring: #ccf05b;
+  --chart-1: #ccf05b;
+  --chart-2: #9a9a9a;
+  --chart-3: #f5f5f5;
+  --chart-4: #4a4a4a;
+  --chart-5: #1c1c1c;
+  --radius: 0rem;
+  --sidebar: #141414;
+  --sidebar-foreground: #f5f5f5;
+  --sidebar-primary: #ccf05b;
+  --sidebar-primary-foreground: #111111;
+  --sidebar-accent: #1c1c1c;
+  --sidebar-accent-foreground: #f5f5f5;
+  --sidebar-border: #2a2a2a;
+  --sidebar-ring: #ccf05b;
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, Helvetica, Arial,
+    sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+  --default-mono-font-family: var(--font-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    @apply font-sans antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  a {
+    @apply underline-offset-2;
+  }
+
+  /* Slim, square scrollbars that match the ink/lime theme on every platform.
+     `scrollbar-width`/`scrollbar-color` cover Firefox and Chromium 121+; the
+     `::-webkit-scrollbar-*` rules cover older WebKit/Blink. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--primary) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--primary);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--foreground);
+  }
+
+  /* Long identifiers (endpoint paths, hashes) must never widen the page. */
+  :not(pre) > code {
+    overflow-wrap: anywhere;
+  }
+}

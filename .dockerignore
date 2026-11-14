@@ -1,0 +1,9 @@
+target
+.git
+.github
+.commandcode
+*.md
+Dockerfile
+docker-compose.yml
+web/node_modules
+web/dist

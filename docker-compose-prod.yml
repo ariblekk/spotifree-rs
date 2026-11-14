@@ -1,0 +1,73 @@
+# Production compose for running the published image on a server.
+#
+#   docker compose -f docker-compose-prod.yml pull
+#   docker compose -f docker-compose-prod.yml up -d
+#
+# Set the image tag below (or override with IMAGE=<user>/<repo>:<tag>).
+#
+# Optional:
+#   BIND_HOST       host address to publish on (default 127.0.0.1, behind a proxy)
+#   PUBLISHED_PORT  host port (default 8080)
+#   ALLOWED_ORIGIN  comma-separated allowed origins (unset = any origin)
+
+services:
+  app:
+    image: ariblekk/spotifree-rs:1.0.0
+    pull_policy: always
+    restart: always
+    # SIGTERM starts a graceful shutdown; give in-flight requests time to finish.
+    stop_grace_period: 15s
+    environment:
+      PORT: 8080
+      BIND: 0.0.0.0
+      # Empty = allow any origin (origin check bypassed). Set a comma-separated
+      # list like https://app.example.com to restrict cross-site callers.
+      #
+      # Read from the shell OR from a `.env` file next to this file. A `.env` is
+      # the one that always works: `sudo docker compose` and dashboard deploys
+      # (Dokploy) drop exported shell variables, and an empty value here means
+      # "any origin", so a silent miss quietly widens access.
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-}
+    # Loopback by default; set BIND_HOST=0.0.0.0 to expose directly. Behind a
+    # Cloudflare Tunnel drop this block and rely on `expose`.
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${PUBLISHED_PORT:-8080}:8080"
+    expose:
+      - "8080"
+
+    # Dokploy/Traefik discovers containers via this external network. Keep it when
+    # deploying with Dokploy; otherwise Traefik cannot see the container and the
+    # domain returns its own 404. Remove this block for plain `docker run` hosts.
+    networks:
+      - dokploy-network
+
+    # Hardening: no writes to the image, no extra caps, no privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    cpus: "0.50"
+    mem_limit: 256m
+
+    # /healthz answers 503 until the web-player build is discovered, so a
+    # container that cannot reach Spotify is reported rather than marked healthy.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  dokploy-network:
+    external: true

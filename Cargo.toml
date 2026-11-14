@@ -1,0 +1,44 @@
+[package]
+name = "spotifree-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Unofficial Spotify Web Player client without the official API"
+license = "MIT"
+
+[dependencies]
+axum = "0.8"
+base64 = "0.23"
+clap = { version = "4", features = ["derive"] }
+hmac = "0.13"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+    "brotli",
+    "charset",
+    "cookies",
+    "deflate",
+    "gzip",
+    "http2",
+    "json",
+    "rustls-tls",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.11"
+thiserror = "2"
+tokio = { version = "1", features = [
+    "fs",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+tower-http = { version = "0.6", features = [
+    "compression-br",
+    "compression-gzip",
+    "fs",
+] }
+
+[profile.release]
+lto = "thin"

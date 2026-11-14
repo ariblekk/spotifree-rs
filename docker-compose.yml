@@ -1,0 +1,14 @@
+services:
+  docs:
+    build: .
+    image: spotifree-rs:latest
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      BIND: 0.0.0.0
+      # Empty = any origin (check bypassed). Put a comma-separated list in a
+      # `.env` file next to this one to restrict cross-site callers, e.g.
+      #   ALLOWED_ORIGIN=http://localhost:5173,http://10.10.10.98:5173
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-}
+    restart: unless-stopped
