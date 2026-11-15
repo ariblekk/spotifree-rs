@@ -23,30 +23,29 @@ import { cn } from "@/lib/utils";
 const BASE = API_BASE || "http://localhost:8080";
 
 const CURL = `# Search
-curl "${BASE}/api/search?q=lofi&limit=5"
+curl "${BASE}/v1/search?q=lofi&limit=5"
 
 # Only tracks and albums
-curl "${BASE}/api/search?q=lofi&type=track,album"
+curl "${BASE}/v1/search?q=lofi&type=track,album"
 
 # Details (Spotify id from any list above)
-curl "${BASE}/api/album/4aawyAB9vmqN3uQ7FjRGTy"
-curl "${BASE}/api/track/23NgAzXBCwZdtwBn5hQzD5"
-curl "${BASE}/api/lyrics/23NgAzXBCwZdtwBn5hQzD5"`;
+curl "${BASE}/v1/album/4aawyAB9vmqN3uQ7FjRGTy"
+curl "${BASE}/v1/track/23NgAzXBCwZdtwBn5hQzD5"`;
 
 const JS_FETCH = `const BASE = "${BASE}";
 
-const search = await fetch(\`\${BASE}/api/search?q=lofi&limit=5\`);
+const search = await fetch(\`\${BASE}/v1/search?q=lofi&limit=5\`);
 if (!search.ok) throw new Error((await search.json()).error);
 const data = await search.json();
 
 console.log(data.tracks[0].name, data.tracks[0].artists.join(", "));
 
 // Detail endpoints return the resource as-is.
-const album = await (await fetch(\`\${BASE}/api/album/\${data.albums[0].id}\`)).json();
+const album = await (await fetch(\`\${BASE}/v1/album/\${data.albums[0].id}\`)).json();
 console.log(album.albumUnion.name, album.albumUnion.tracksV2.items.length);
 
 // Charts: market is id or global; top is daily or alltime.
-const charts = await (await fetch(\`\${BASE}/api/charts/id?top=daily\`)).json();
+const charts = await (await fetch(\`\${BASE}/v1/charts/id?top=daily\`)).json();
 for (const artist of charts.popular_artists) {
   console.log(artist.name, artist.id);
 }`;
@@ -55,7 +54,7 @@ const PYTHON = `import requests
 
 BASE = "${BASE}"
 
-r = requests.get(f"{BASE}/api/search", params={"q": "lofi", "limit": 5}, timeout=15)
+r = requests.get(f"{BASE}/v1/search", params={"q": "lofi", "limit": 5}, timeout=15)
 r.raise_for_status()
 data = r.json()
 
@@ -63,17 +62,17 @@ for track in data["tracks"]:
     print(track["name"], "-", ", ".join(track["artists"]))
 
 # Charts: market is id or global, optional top=daily|alltime
-charts = requests.get(f"{BASE}/api/charts/id", params={"top": "daily"}, timeout=20).json()
+charts = requests.get(f"{BASE}/v1/charts/id", params={"top": "daily"}, timeout=20).json()
 for row in charts["charts"][0]["entries"]:
     print(row["position"], row["name"], row["plays"])
 
 for artist in charts["popular_artists"]:
     print(artist["name"], artist["id"])`;
 
-const CHARTS = `curl "${BASE}/api/charts/id"
-curl "${BASE}/api/charts/id?top=daily"
-curl "${BASE}/api/charts/id?top=alltime"
-curl "${BASE}/api/charts/global?top=daily"`;
+const CHARTS = `curl "${BASE}/v1/charts/id"
+curl "${BASE}/v1/charts/id?top=daily"
+curl "${BASE}/v1/charts/id?top=alltime"
+curl "${BASE}/v1/charts/global?top=daily"`;
 
 const CHARTS_JSON = `{
   "country": "id",
@@ -129,7 +128,7 @@ const CHARTS_JSON = `{
   ]
 }`;
 
-const PLAYBACK = `const res = await fetch(\`${BASE}/api/track/\${id}\`);
+const PLAYBACK = `const res = await fetch(\`${BASE}/v1/track/\${id}\`);
 const { trackUnion } = await res.json();
 
 // Cover art, largest source first
@@ -263,7 +262,7 @@ export default function DocsPage() {
       </p>
 
       <Section title="Endpoints" first>
-        <Endpoint path="/api/search?q=lofi&limit=20">
+        <Endpoint path="/v1/search?q=lofi&limit=20">
           Plain search results as typed JSON.
           <Table>
             <TableHeader>
@@ -302,12 +301,12 @@ export default function DocsPage() {
           </Table>
         </Endpoint>
 
-        <Endpoint path="/api/search/suggest?q={query}">
+        <Endpoint path="/v1/search/suggest?q={query}">
           Instant search suggestions (top hits and autocomplete query chips) as
           the user types.
         </Endpoint>
 
-        <Endpoint path="/api/charts/{country}">
+        <Endpoint path="/v1/charts/{country}">
           Charts for <code>id</code> or <code>global</code>: the ranked chart
           (50 rows), trending songs, popular albums and artists. See{" "}
           <a
@@ -319,37 +318,43 @@ export default function DocsPage() {
           .
         </Endpoint>
 
-        <Endpoint path="/api/track/{id}">
+        <Endpoint path="/v1/track/{id}">
           One track: name, artists, album, duration, cover.
         </Endpoint>
 
-        <Endpoint path="/api/track/{id}/credits">
+        <Endpoint path="/v1/track/{id}/credits">
           Track credits: songwriters, producers, performers, publishers, and record
           labels.
         </Endpoint>
 
-        <Endpoint path="/api/track/{id}/recommendations">
+        <Endpoint path="/v1/track/{id}/recommendations">
           Seeded recommended tracks related to this track (also available at{" "}
-          <code>/api/track/{"{id}"}/related</code>).
+          <code>/v1/track/{"{id}"}/related</code>).
         </Endpoint>
 
-        <Endpoint path="/api/album/{id}">
+        <Endpoint path="/v1/album/{id}">
           Album with its <strong>complete</strong> track list — long albums are
           paged server-side, not cut off.
         </Endpoint>
 
-        <Endpoint path="/api/artist/{id}">
+        <Endpoint path="/v1/artist/{id}">
           Artist profile, top tracks, albums and singles.
         </Endpoint>
 
-        <Endpoint path="/api/playlist/{id}">
+        <Endpoint path="/v1/artist/{id}/discography?type={all|album|single|compilation}&offset={n}&limit={n}">
+          Artist discography catalog releases with pagination.
+        </Endpoint>
+
+        <Endpoint path="/v1/playlist/{id}">
           Playlist with its items (up to 1000, paged server-side).
         </Endpoint>
 
-        <Endpoint path="/api/lyrics/{id}">
-          Lyrics plus ISRC:{" "}
-          <code>{'{ "isrc": string|null, "lyrics": null|{...} }'}</code>. A miss
-          returns <code>null</code>, never an error.
+        <Endpoint path="/v1/browse">
+          Browse / explore categories and genres (title, card color, icon image, ID).
+        </Endpoint>
+
+        <Endpoint path="/v1/genre/{id}">
+          Curated genre page with playlists, new releases, and subcategories.
         </Endpoint>
 
         <Endpoint path="/healthz">
@@ -483,7 +488,7 @@ export default function DocsPage() {
               <Td>Artist[]</Td>
               <Td>
                 Artists trending in the market; 9 per market. Call{" "}
-                <code>/api/artist/&#123;id&#125;</code> for the full profile
+                <code>/v1/artist/&#123;id&#125;</code> for the full profile
               </Td>
             </TableRow>
           </TableBody>

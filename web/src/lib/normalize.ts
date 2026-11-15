@@ -42,10 +42,27 @@ export interface AlbumDetail {
   tracks: LocalTrack[];
 }
 
+export interface ExternalLink {
+  name: string;
+  url: string;
+}
+
+export interface ArtistPick {
+  title: string;
+  subtitle?: string | null;
+  comment?: string | null;
+  uri: string;
+  image?: string | null;
+}
+
 export interface ArtistDetail {
   name: string;
   uri: string;
   image: string | null;
+  headerImage?: string | null;
+  verified?: boolean;
+  externalLinks?: ExternalLink[];
+  artistPick?: ArtistPick | null;
   listeners?: number;
   followers?: number;
   bio: string;
@@ -75,10 +92,12 @@ export interface TrackDetail {
 }
 
 export function pickImage(art: any): string | null {
-  const sources: any[] = art?.sources ?? [];
+  const sources: any[] = art?.sources ?? art?.data?.sources ?? [];
   if (sources.length === 0) return null;
 
-  return [...sources].sort((a, b) => (b.width || 0) - (a.width || 0))[0].url;
+  return [...sources].sort(
+    (a, b) => (b.width || b.maxWidth || 0) - (a.width || a.maxWidth || 0),
+  )[0].url;
 }
 
 function artistNames(items: any[]): string[] {
@@ -131,10 +150,39 @@ export function normalizeArtist(union: any): ArtistDetail {
     .map((entry: any) => entry.track)
     .filter(Boolean);
 
+  const pinned = union.profile?.pinnedItem;
+  let artistPick: ArtistPick | null = null;
+  if (pinned?.title) {
+    artistPick = {
+      title: pinned.title,
+      subtitle: pinned.subtitle || null,
+      comment: pinned.comment || null,
+      uri: pinned.uri || "",
+      image:
+        pickImage(pinned.thumbnailImage?.data || pinned.thumbnailImage) ||
+        pickImage(pinned.itemV2?.data?.coverArt),
+    };
+  }
+
+  const externalLinks: ExternalLink[] = (
+    union.profile?.externalLinks?.items || []
+  )
+    .filter((l: any) => l?.name && l?.url)
+    .map((l: any) => ({ name: l.name, url: l.url }));
+
+  const verified =
+    union.onPlatformReputationTrait?.verification?.isVerified === true;
+
+  const headerImage = pickImage(union.headerImage?.data || union.headerImage);
+
   return {
     name: union.profile?.name,
     uri: union.uri,
     image: pickImage(union.visuals?.avatarImage),
+    headerImage,
+    verified,
+    externalLinks,
+    artistPick,
     listeners: union.stats?.monthlyListeners,
     followers: union.stats?.followers,
     bio: union.profile?.biography?.text || "",

@@ -33,7 +33,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use spotifree_rs::{Provider, SearchResults, Session, TrackExtras, TrackHints};
+use spotifree_rs::{SearchResults, Session};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -57,7 +57,6 @@ const TTL_SUGGEST: Duration = Duration::from_secs(60);
 const TTL_TRACK: Duration = Duration::from_secs(120);
 const TTL_COLLECTION: Duration = Duration::from_secs(300);
 const TTL_RECOMMENDATIONS: Duration = Duration::from_secs(300);
-const TTL_LYRICS: Duration = Duration::from_secs(1800);
 const TTL_CREDITS: Duration = Duration::from_secs(1800);
 /// Charts update a few times a day at most, so they can be cached harder.
 const TTL_CHARTS: Duration = Duration::from_secs(900);
@@ -216,6 +215,13 @@ impl Cache {
         self.entries.lock().map(|entries| entries.len()).unwrap_or(0)
     }
 
+    fn bytes_count(&self) -> usize {
+        self.entries
+            .lock()
+            .map(|entries| entries.values().map(|entry| entry.body.len()).sum())
+            .unwrap_or(0)
+    }
+
     /// `(hits, misses)`, so `/healthz` can show whether the TTLs are useful.
     fn stats(&self) -> (u64, u64) {
         (
@@ -273,9 +279,9 @@ impl Drop for InFlightGuard<'_> {
 struct App {
     /// Shared and internally synchronized: queries run concurrently.
     session: Session,
-    provider: Provider,
     cache: Cache,
     config: Config,
+    started_at: Instant,
 }
 
 #[derive(Deserialize)]
@@ -291,6 +297,14 @@ struct SearchParams {
 struct SuggestParams {
     #[serde(default)]
     q: String,
+}
+
+#[derive(Default, Deserialize)]
+struct DiscographyParams {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    #[serde(rename = "type")]
+    category: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -319,9 +333,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session = Session::new().await?;
     let state = Arc::new(App {
         session,
-        provider: Provider::new(),
         cache: Cache::default(),
         config,
+        started_at: Instant::now(),
     });
 
     // Pay the discovery and token cost now instead of on the first user
@@ -349,18 +363,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Middleware only needs the origin list, not the whole app state.
     let cors = Cors::from(&state.config);
     let app = Router::new()
-        .route("/api/search", get(search))
-        .route("/api/search/suggest", get(search_suggest))
-        .route("/api/charts", get(charts))
-        .route("/api/charts/{country}", get(charts_country))
-        .route("/api/track/{id}", get(track_detail))
-        .route("/api/track/{id}/credits", get(track_credits))
-        .route("/api/track/{id}/recommendations", get(track_recommendations))
-        .route("/api/track/{id}/related", get(track_recommendations))
-        .route("/api/lyrics/{id}", get(track_lyrics))
-        .route("/api/album/{id}", get(album_detail))
-        .route("/api/artist/{id}", get(artist_detail))
-        .route("/api/playlist/{id}", get(playlist_detail))
+        .route("/v1/search", get(search))
+        .route("/v1/search/suggest", get(search_suggest))
+        .route("/v1/charts", get(charts))
+        .route("/v1/charts/{country}", get(charts_country))
+        .route("/v1/browse", get(browse_categories))
+        .route("/v1/genre/{id}", get(genre_detail))
+        .route("/v1/track/{id}", get(track_detail))
+        .route("/v1/track/{id}/credits", get(track_credits))
+        .route("/v1/track/{id}/recommendations", get(track_recommendations))
+        .route("/v1/track/{id}/related", get(track_recommendations))
+        .route("/v1/album/{id}", get(album_detail))
+        .route("/v1/artist/{id}", get(artist_detail))
+        .route("/v1/artist/{id}/discography", get(artist_discography))
+        .route("/v1/playlist/{id}", get(playlist_detail))
         .route("/healthz", get(health))
         // Pre-Vite URLs, still linked from bookmarks and notes.
         .route("/index.html", get(legacy_page))
@@ -441,14 +457,17 @@ async fn health(State(state): State<Arc<App>>) -> Response {
     let token = state.session.token().await;
     let warm = state.session.is_warm().await;
     let (hits, misses) = state.cache.stats();
+    let uptime_secs = state.started_at.elapsed().as_secs();
 
     let body = serde_json::json!({
         "ok": warm,
         "warm": warm,
+        "uptime_secs": uptime_secs,
         "hashes": state.session.hash_count().await,
         "token_valid": token.as_ref().is_some_and(|token| !token.is_expired()),
         "token_expires_in_ms": token.as_ref().map(|token| token.expires_in_ms()),
         "cache_entries": state.cache.entry_count(),
+        "cache_bytes": state.cache.bytes_count(),
         "cache_hits": hits,
         "cache_misses": misses,
     });
@@ -714,55 +733,62 @@ async fn charts_for(state: Arc<App>, params: ChartParams) -> Response {
         Some(body) => json_body(body),
         None => deny(StatusCode::BAD_GATEWAY, "upstream charts failed"),
     }
-}/// Lyrics and ISRC for a track. The track is read from pathfinder, the ISRC
-/// from Spotify's protobuf metadata, the lyrics from lrc.red (keyed by that
-/// ISRC) and falling back to LRCLIB.
-async fn track_lyrics(
-    State(state): State<Arc<App>>,
-    Path(id): Path<String>,
-) -> Response {
-    if !valid_id(&id) {
-        return deny(StatusCode::BAD_REQUEST, "invalid track id");
-    }
+}
 
-    let key = format!("lyrics:{id}");
+async fn browse_categories(
+    State(state): State<Arc<App>>,
+) -> Response {
+    let key = "browse:categories".to_string();
 
     let fetched = state
         .cache
-        .get_or_fetch(key, TTL_LYRICS, async {
-            // Both Spotify calls are independent, so they run concurrently.
-            let (track, isrc) =
-                tokio::join!(state.session.track(&id), state.session.track_isrc(&id));
-
-            let hints = match track {
-                Ok(data) => TrackHints::from_track_union(&data),
+        .get_or_fetch(key, TTL_COLLECTION, async {
+            match state.session.browse_categories().await {
+                Ok(data) => Some(Bytes::from(
+                    serde_json::to_vec(&data).unwrap_or_default(),
+                )),
                 Err(error) => {
-                    eprintln!("getTrack failed: {error}");
-                    return None;
-                }
-            };
-
-            // A failed metadata call still leaves the lyrics usable, so the
-            // ISRC alone degrades to null.
-            let isrc = match isrc {
-                Ok(isrc) => isrc,
-                Err(error) => {
-                    eprintln!("track metadata failed: {error}");
+                    eprintln!("browse_categories failed: {error}");
                     None
                 }
-            };
-
-            let lyrics = state.provider.lyrics(&hints.with_isrc(isrc.clone())).await;
-
-            Some(Bytes::from(
-                serde_json::to_vec(&TrackExtras { isrc, lyrics }).unwrap_or_default(),
-            ))
+            }
         })
         .await;
 
     match fetched {
         Some(body) => json_body(body),
-        None => deny(StatusCode::BAD_GATEWAY, "upstream request failed"),
+        None => deny(StatusCode::BAD_GATEWAY, "upstream browse failed"),
+    }
+}
+
+async fn genre_detail(
+    State(state): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Response {
+    if !valid_id(&id) {
+        return deny(StatusCode::BAD_REQUEST, "invalid genre id");
+    }
+
+    let key = format!("genre:{id}");
+
+    let fetched = state
+        .cache
+        .get_or_fetch(key, TTL_COLLECTION, async {
+            match state.session.genre(&id).await {
+                Ok(data) => Some(Bytes::from(
+                    serde_json::to_vec(&data).unwrap_or_default(),
+                )),
+                Err(error) => {
+                    eprintln!("genre_detail failed: {error}");
+                    None
+                }
+            }
+        })
+        .await;
+
+    match fetched {
+        Some(body) => json_body(body),
+        None => deny(StatusCode::BAD_GATEWAY, "upstream genre failed"),
     }
 }
 
@@ -778,6 +804,49 @@ async fn artist_detail(
     Path(id): Path<String>,
 ) -> Response {
     lookup(&state, Detail::Artist, &id).await
+}
+
+async fn artist_discography(
+    State(state): State<Arc<App>>,
+    Path(id): Path<String>,
+    Query(params): Query<DiscographyParams>,
+) -> Response {
+    if !valid_id(&id) {
+        return deny(StatusCode::BAD_REQUEST, "invalid artist id");
+    }
+
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let category = params.category.as_deref();
+
+    let key = format!(
+        "discography:{id}:{}:{offset}:{limit}",
+        category.unwrap_or("all")
+    );
+
+    let fetched = state
+        .cache
+        .get_or_fetch(key, TTL_COLLECTION, async {
+            match state
+                .session
+                .artist_discography(&id, category, offset, limit)
+                .await
+            {
+                Ok(data) => Some(Bytes::from(
+                    serde_json::to_vec(&data).unwrap_or_default(),
+                )),
+                Err(error) => {
+                    eprintln!("artist_discography failed: {error}");
+                    None
+                }
+            }
+        })
+        .await;
+
+    match fetched {
+        Some(body) => json_body(body),
+        None => deny(StatusCode::BAD_GATEWAY, "upstream request failed"),
+    }
 }
 
 async fn playlist_detail(
@@ -1089,22 +1158,25 @@ fn cache_control(path: &str) -> &'static str {
         "public, max-age=31536000, immutable"
     } else if path == "/healthz" {
         "no-store"
-    } else if path == "/api/search" || path == "/api/search/suggest" {
+    } else if path == "/v1/search" || path == "/v1/search/suggest" {
         "public, max-age=30, stale-while-revalidate=60"
-    } else if path.starts_with("/api/charts") {
+    } else if path.starts_with("/v1/charts")
+        || path == "/v1/browse"
+        || path.starts_with("/v1/genre/")
+    {
         "public, max-age=900, stale-while-revalidate=600"
-    } else if path.starts_with("/api/lyrics/") || path.ends_with("/credits") {
+    } else if path.ends_with("/credits") {
         "public, max-age=1800, stale-while-revalidate=300"
     } else if path.ends_with("/recommendations") || path.ends_with("/related") {
         "public, max-age=300, stale-while-revalidate=120"
-    } else if path.starts_with("/api/track/") {
+    } else if path.starts_with("/v1/track/") {
         "public, max-age=120, stale-while-revalidate=60"
-    } else if path.starts_with("/api/album/")
-        || path.starts_with("/api/artist/")
-        || path.starts_with("/api/playlist/")
+    } else if path.starts_with("/v1/album/")
+        || path.starts_with("/v1/artist/")
+        || path.starts_with("/v1/playlist/")
     {
         "public, max-age=300, stale-while-revalidate=120"
-    } else if path.starts_with("/api/") {
+    } else if path.starts_with("/v1/") || path.starts_with("/api/") {
         // Unknown API path: never let a shared cache keep a bad answer.
         "no-store"
     } else {
@@ -1137,28 +1209,39 @@ async fn add_security_headers(request: Request, next: Next) -> Response {
             "default-src 'self'; img-src 'self' https: data:; \
              style-src 'self'; font-src 'self'; \
              script-src 'self'; \
-             connect-src 'self'; base-uri 'none'; form-action 'self'",
+             connect-src 'self' https://lrc.red https://lrclib.net; base-uri 'none'; form-action 'self'",
         ),
     );
     response
 }
 
-/// `/api/...` that no route matches must be a JSON 404, not the SPA shell.
-/// `/api` itself is the docs page and is left to the SPA.
+/// `/v1/...` that no route matches must be a JSON 404, not the SPA shell.
 fn reject_unknown_api(path: &str) -> Option<Response> {
-    let rest = path.strip_prefix("/api/")?;
-
-    let known = rest == "search"
-        || rest == "search/suggest"
-        || rest == "charts"
-        || ["track/", "lyrics/", "album/", "artist/", "playlist/", "charts/"]
+    if let Some(rest) = path.strip_prefix("/v1/") {
+        let known = rest == "search"
+            || rest == "search/suggest"
+            || rest == "charts"
+            || rest == "browse"
+            || [
+                "track/",
+                "album/",
+                "artist/",
+                "playlist/",
+                "charts/",
+                "genre/",
+            ]
             .iter()
             .any(|prefix| rest.starts_with(prefix));
 
-    if known {
-        None
+        if known {
+            None
+        } else {
+            Some(deny(StatusCode::NOT_FOUND, "unknown API path"))
+        }
+    } else if path.starts_with("/api/") {
+        Some(deny(StatusCode::NOT_FOUND, "API moved to /v1/"))
     } else {
-        Some(deny(StatusCode::NOT_FOUND, "unknown API path"))
+        None
     }
 }
 
@@ -1183,7 +1266,11 @@ async fn reject_missing_files(request: Request, next: Next) -> Response {
         "/donate.html",
     ];
 
-    if path.starts_with("/api/") || legacy.contains(&path.as_str()) || !last.contains('.') {
+    if path.starts_with("/v1/")
+        || path.starts_with("/api/")
+        || legacy.contains(&path.as_str())
+        || !last.contains('.')
+    {
         return next.run(request).await;
     }
 
@@ -1249,15 +1336,20 @@ mod tests {
 
     #[test]
     fn unknown_api_paths_are_json_404s() {
-        assert!(reject_unknown_api("/api/nonsense").is_some());
+        assert!(reject_unknown_api("/v1/nonsense").is_some());
+        assert!(reject_unknown_api("/v1/track").is_some());
+        assert!(reject_unknown_api("/v1/lyrics/abc").is_some());
         assert!(reject_unknown_api("/api/track").is_some());
 
-        assert!(reject_unknown_api("/api").is_none());
-        assert!(reject_unknown_api("/api/search").is_none());
-        assert!(reject_unknown_api("/api/search/suggest").is_none());
-        assert!(reject_unknown_api("/api/track/abc/credits").is_none());
-        assert!(reject_unknown_api("/api/track/abc/recommendations").is_none());
-        assert!(reject_unknown_api("/api/album/abc").is_none());
+        assert!(reject_unknown_api("/docs").is_none());
+        assert!(reject_unknown_api("/v1/search").is_none());
+        assert!(reject_unknown_api("/v1/search/suggest").is_none());
+        assert!(reject_unknown_api("/v1/browse").is_none());
+        assert!(reject_unknown_api("/v1/genre/abc").is_none());
+        assert!(reject_unknown_api("/v1/track/abc/credits").is_none());
+        assert!(reject_unknown_api("/v1/track/abc/recommendations").is_none());
+        assert!(reject_unknown_api("/v1/artist/abc/discography").is_none());
+        assert!(reject_unknown_api("/v1/album/abc").is_none());
         assert!(reject_unknown_api("/detail").is_none());
     }
 
@@ -1265,8 +1357,10 @@ mod tests {
     fn cache_stats_count_hits_and_misses() {
         let cache = Cache::default();
         assert!(cache.get("none").is_none());
+        assert_eq!(cache.bytes_count(), 0);
         cache.insert("k".into(), Bytes::from_static(b"v"), Duration::from_secs(60));
         assert!(cache.get("k").is_some());
+        assert_eq!(cache.bytes_count(), 1);
 
         assert_eq!(cache.stats(), (1, 1));
     }
@@ -1370,17 +1464,19 @@ mod tests {
         assert!(cache_control("/assets/index-abc.js").contains("immutable"));
         assert!(cache_control("/favicon.svg").contains("immutable"));
         assert_eq!(cache_control("/healthz"), "no-store");
+        assert_eq!(cache_control("/v1/typo"), "no-store");
         assert_eq!(cache_control("/api/typo"), "no-store");
         assert_eq!(cache_control("/"), "no-cache");
-        assert!(cache_control("/api/search").starts_with("public, max-age=30"));
-        assert!(cache_control("/api/search/suggest").starts_with("public, max-age=30"));
-        assert!(cache_control("/api/charts").starts_with("public, max-age=900"));
-        assert!(cache_control("/api/charts/ID").starts_with("public, max-age=900"));
-        assert!(cache_control("/api/album/x").starts_with("public, max-age=300"));
-        assert!(cache_control("/api/lyrics/x").starts_with("public, max-age=1800"));
-        assert!(cache_control("/api/track/x/credits").starts_with("public, max-age=1800"));
-        assert!(cache_control("/api/track/x/recommendations").starts_with("public, max-age=300"));
-        assert!(cache_control("/api/track/x/related").starts_with("public, max-age=300"));
+        assert!(cache_control("/v1/search").starts_with("public, max-age=30"));
+        assert!(cache_control("/v1/search/suggest").starts_with("public, max-age=30"));
+        assert!(cache_control("/v1/charts").starts_with("public, max-age=900"));
+        assert!(cache_control("/v1/charts/ID").starts_with("public, max-age=900"));
+        assert!(cache_control("/v1/browse").starts_with("public, max-age=900"));
+        assert!(cache_control("/v1/genre/x").starts_with("public, max-age=900"));
+        assert!(cache_control("/v1/album/x").starts_with("public, max-age=300"));
+        assert!(cache_control("/v1/track/x/credits").starts_with("public, max-age=1800"));
+        assert!(cache_control("/v1/track/x/recommendations").starts_with("public, max-age=300"));
+        assert!(cache_control("/v1/track/x/related").starts_with("public, max-age=300"));
     }
 
     #[test]

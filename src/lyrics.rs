@@ -25,7 +25,7 @@ const USER_AGENT: &str = "spotifree-rs/0.1.0 (+https://github.com/ariblekk/spoti
 /// Seconds of slack allowed when matching an LRCLIB duration.
 const DURATION_TOLERANCE: f64 = 4.0;
 
-/// What `GET /api/lyrics/{id}` returns.
+/// What `GET /v1/lyrics/{id}` returns.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TrackExtras {
     /// From Spotify's protobuf metadata; `None` when unavailable.

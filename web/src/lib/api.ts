@@ -103,7 +103,7 @@ export interface TrackCredits {
 
 export type DetailType = "album" | "artist" | "track" | "playlist";
 
-/// `GET /api/{type}/{id}` — Spotify wraps the object under a per-type key.
+/// `GET /v1/{type}/{id}` — Spotify wraps the object under a per-type key.
 export type DetailPayload = Record<string, unknown>;
 
 /// Where the Rust API lives. Empty (the default) keeps requests relative, so a
@@ -132,7 +132,7 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 export function search(query: string, signal?: AbortSignal) {
   return getJson<SearchResults>(
-    `/api/search?q=${encodeURIComponent(query)}&limit=20`,
+    `/v1/search?q=${encodeURIComponent(query)}&limit=20`,
     signal,
   );
 }
@@ -143,7 +143,7 @@ export function detail(
   signal?: AbortSignal,
 ): Promise<DetailPayload> {
   return getJson<DetailPayload>(
-    `/api/${type}/${encodeURIComponent(id)}`,
+    `/v1/${type}/${encodeURIComponent(id)}`,
     signal,
   );
 }
@@ -162,24 +162,206 @@ export function charts(
   if (top) query.set("top", top);
 
   return getJson<Charts | null>(
-    `/api/charts/${encodeURIComponent(country)}?${query}`,
+    `/v1/charts/${encodeURIComponent(country)}?${query}`,
     signal,
   );
 }
 
-/// Lyrics and ISRC are best-effort; a failure leaves the page usable.
-export async function extras(
-  id: string,
+export interface BrowseCategory {
+  id: string;
+  title: string;
+  color?: string | null;
+  image_url?: string | null;
+  href: string;
+}
+
+export interface GenreItem {
+  title: string;
+  description?: string | null;
+  href: string;
+  image_url?: string | null;
+  followers?: number | null;
+  artists?: string[] | null;
+}
+
+export interface GenreSection {
+  title: string;
+  items: GenreItem[];
+}
+
+export interface GenrePage {
+  id: string;
+  title: string;
+  subtitle?: string | null;
+  sections: GenreSection[];
+}
+
+export function browse(signal?: AbortSignal) {
+  return getJson<BrowseCategory[]>("/v1/browse", signal);
+}
+
+export function genre(id: string, signal?: AbortSignal) {
+  return getJson<GenrePage>(`/v1/genre/${encodeURIComponent(id)}`, signal);
+}
+
+export interface LyricsHints {
+  title: string;
+  artist: string;
+  album?: string | null;
+  durationMs?: number | null;
+}
+
+/// Fetch lyrics directly from public providers (lrc.red, falling back to LRCLIB)
+/// client-side without routing through backend.
+export async function fetchLyrics(
+  hints: LyricsHints,
   signal?: AbortSignal,
-): Promise<Extras | null> {
-  try {
-    return await getJson<Extras>(
-      `/api/lyrics/${encodeURIComponent(id)}`,
-      signal,
-    );
-  } catch {
-    return null;
+): Promise<Extras> {
+  const title = hints.title.trim();
+  const artist = hints.artist.trim();
+  if (!title || !artist) {
+    return { isrc: null, lyrics: null };
   }
+
+  const durationSec = hints.durationMs
+    ? Math.round(hints.durationMs / 1000)
+    : undefined;
+
+  // 1. Primary: lrc.red (client-side)
+  try {
+    const q = `${title} ${artist}`;
+    const searchRes = await fetch(
+      `https://lrc.red/search.json?q=${encodeURIComponent(q)}`,
+      { signal },
+    );
+    if (searchRes.ok) {
+      const data = (await searchRes.json()) as {
+        hits?: Array<{
+          isrc: string;
+          title: string;
+          artist: string;
+          duration?: number;
+        }>;
+      };
+
+      const hits = data?.hits ?? [];
+      if (hits.length > 0) {
+        let best = hits[0];
+        if (durationSec) {
+          best = hits.reduce((closest, curr) => {
+            const diffCurr = Math.abs((curr.duration ?? 0) - durationSec);
+            const diffClosest = Math.abs((closest.duration ?? 0) - durationSec);
+            return diffCurr < diffClosest ? curr : closest;
+          }, hits[0]);
+        }
+
+        if (best.isrc) {
+          const lrcRes = await fetch(
+            `https://lrc.red/s/${encodeURIComponent(best.isrc)}.lrc`,
+            { signal },
+          );
+          if (lrcRes.ok) {
+            const synced = await lrcRes.text();
+            if (synced && synced.trim()) {
+              return {
+                isrc: best.isrc,
+                lyrics: {
+                  kind: "synced",
+                  source: "lrc.red",
+                  instrumental: false,
+                  plain: null,
+                  synced: synced.trim(),
+                },
+              };
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // fallback to lrclib
+  }
+
+  // 2. Fallback: LRCLIB (client-side)
+  try {
+    const params = new URLSearchParams({
+      track_name: title,
+      artist_name: artist,
+    });
+    if (hints.album) params.set("album_name", hints.album);
+    if (durationSec) params.set("duration", String(durationSec));
+
+    const res = await fetch(`https://lrclib.net/api/get?${params}`, { signal });
+    if (res.ok) {
+      const data = await res.json();
+      const lyrics = parseLrcLib(data);
+      if (lyrics) return { isrc: null, lyrics };
+    }
+  } catch {
+    // fallback to lrclib search
+  }
+
+  try {
+    const params = new URLSearchParams({
+      track_name: title,
+      artist_name: artist,
+    });
+    const res = await fetch(`https://lrclib.net/api/search?${params}`, {
+      signal,
+    });
+    if (res.ok) {
+      const records = (await res.json()) as Array<{
+        duration?: number;
+        instrumental?: boolean;
+        plainLyrics?: string;
+        syncedLyrics?: string;
+      }>;
+      if (Array.isArray(records) && records.length > 0) {
+        let best = records[0];
+        if (durationSec) {
+          best = records.reduce((closest, curr) => {
+            const diffCurr = Math.abs((curr.duration ?? 0) - durationSec);
+            const diffClosest = Math.abs((closest.duration ?? 0) - durationSec);
+            return diffCurr < diffClosest ? curr : closest;
+          }, records[0]);
+        }
+        const lyrics = parseLrcLib(best);
+        if (lyrics) return { isrc: null, lyrics };
+      }
+    }
+  } catch {
+    // best-effort
+  }
+
+  return { isrc: null, lyrics: null };
+}
+
+function parseLrcLib(data: {
+  instrumental?: boolean;
+  plainLyrics?: string;
+  syncedLyrics?: string;
+}): Lyrics | null {
+  if (!data) return null;
+  if (data.instrumental) {
+    return {
+      kind: "instrumental",
+      source: "lrclib.net",
+      instrumental: true,
+      plain: null,
+      synced: null,
+    };
+  }
+  const synced = data.syncedLyrics?.trim() || null;
+  const plain = data.plainLyrics?.trim() || null;
+  if (!synced && !plain) return null;
+
+  return {
+    kind: synced ? "synced" : "plain",
+    source: "lrclib.net",
+    instrumental: false,
+    plain,
+    synced,
+  };
 }
 
 export async function fetchCredits(
@@ -203,7 +385,7 @@ export async function fetchCredits(
           };
         };
       };
-    }>(`/api/track/${encodeURIComponent(id)}/credits`, signal);
+    }>(`/v1/track/${encodeURIComponent(id)}/credits`, signal);
 
     const trait = raw?.trackUnion?.creditsTrait;
     if (!trait) return null;

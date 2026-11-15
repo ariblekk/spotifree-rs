@@ -13,13 +13,7 @@ import { fileURLToPath, URL } from "node:url";
 const backend = process.env.BACKEND_ORIGIN ?? "http://127.0.0.1:8080";
 
 const rest = [
-  "/api/search",
-  "/api/charts",
-  "/api/track",
-  "/api/lyrics",
-  "/api/album",
-  "/api/artist",
-  "/api/playlist",
+  "/v1",
   "/healthz",
 ];
 

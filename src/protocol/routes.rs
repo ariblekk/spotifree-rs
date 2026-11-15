@@ -1,5 +1,7 @@
 /// Endpoints used by the web player. Spotify's public API is not used.
 pub const OPEN: &str = "https://open.spotify.com/";
+pub const SEARCH_PAGE: &str = "https://open.spotify.com/search";
+pub const GENRE_PAGE: &str = "https://open.spotify.com/genre/";
 pub const TOKEN: &str = "https://open.spotify.com/api/token";
 pub const CLIENT_TOKEN: &str = "https://clienttoken.spotify.com/v1/clienttoken";
 pub const PATHFINDER: &str = "https://api-partner.spotify.com/pathfinder/v2/query";

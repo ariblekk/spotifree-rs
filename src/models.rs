@@ -97,6 +97,45 @@ pub struct Charts {
     pub popular_artists: Vec<Artist>,
 }
 
+/// Category card on the browse/search explore grid.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BrowseCategory {
+    pub id: String,
+    pub title: String,
+    pub color: Option<String>,
+    pub image_url: Option<String>,
+    pub href: String,
+}
+
+/// A curated genre / browse page with sections of playlists and releases.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GenrePage {
+    pub id: String,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub sections: Vec<GenreSection>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GenreSection {
+    pub title: String,
+    pub items: Vec<GenreItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GenreItem {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub href: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followers: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artists: Option<Vec<String>>,
+}
+
 /// Parse a `countryHubsPage` payload into typed charts.
 pub fn parse_charts(country: &str, data: &Value) -> Charts {
     let mut charts = Charts {
@@ -309,6 +348,110 @@ pub fn parse_search(query: &str, data: &Value) -> SearchResults {
         .collect();
 
     results
+}
+
+/// Parse the browse/explore grid from a search page's `initialState`.
+pub fn parse_browse_categories(data: &Value) -> Vec<BrowseCategory> {
+    let mut categories = Vec::new();
+    let Some(sections) = data.pointer("/browse/grid/sections").and_then(Value::as_array) else {
+        return categories;
+    };
+
+    for section in sections {
+        let Some(items) = section.get("items").and_then(Value::as_array) else {
+            continue;
+        };
+
+        for item in items {
+            let Some(title) = item.get("title").and_then(Value::as_str) else {
+                continue;
+            };
+            if title.trim().is_empty() {
+                continue;
+            }
+
+            let href = item.get("href").and_then(Value::as_str).unwrap_or_default();
+            let id = href
+                .strip_prefix("/genre/")
+                .or_else(|| href.strip_prefix("/cultural-moment/hub/"))
+                .unwrap_or(href)
+                .to_string();
+
+            categories.push(BrowseCategory {
+                id,
+                title: title.to_string(),
+                color: item.get("color").and_then(Value::as_str).map(str::to_string),
+                image_url: item.get("imageUrl").and_then(Value::as_str).map(str::to_string),
+                href: href.to_string(),
+            });
+        }
+    }
+
+    categories
+}
+
+/// Parse a genre page from its `initialState`.
+pub fn parse_genre_page(id: &str, data: &Value) -> Option<GenrePage> {
+    let pages = data.pointer("/browse/pages")?.as_object()?;
+    let page = pages
+        .get(&format!("spotify:page:{id}"))
+        .or_else(|| pages.values().find(|p| p.get("title").is_some()))?;
+
+    let title = page.get("title")?.as_str()?.to_string();
+    let subtitle = page
+        .get("subtitle")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
+
+    let mut sections = Vec::new();
+    if let Some(secs) = page.get("sections").and_then(Value::as_array) {
+        for sec in secs {
+            let sec_title = sec
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            let mut items = Vec::new();
+            if let Some(raw_items) = sec.get("items").and_then(Value::as_array) {
+                for item in raw_items {
+                    if let Some(item_title) = item.get("title").and_then(Value::as_str) {
+                        let href = item.get("href").and_then(Value::as_str).unwrap_or_default().to_string();
+                        let description = item.get("description").and_then(Value::as_str).map(str::to_string);
+                        let image_url = item.get("imageUrl").and_then(Value::as_str).map(str::to_string);
+                        let followers = item.get("followers").and_then(Value::as_u64);
+                        let artists = item.get("artistsNames").and_then(Value::as_array).map(|arr| {
+                            arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+                        });
+
+                        items.push(GenreItem {
+                            title: item_title.to_string(),
+                            description,
+                            href,
+                            image_url,
+                            followers,
+                            artists,
+                        });
+                    }
+                }
+            }
+
+            if !items.is_empty() || !sec_title.is_empty() {
+                sections.push(GenreSection {
+                    title: sec_title,
+                    items,
+                });
+            }
+        }
+    }
+
+    Some(GenrePage {
+        id: id.to_string(),
+        title,
+        subtitle,
+        sections,
+    })
 }
 
 fn section<'a>(root: &'a Value, names: &[&str]) -> Vec<&'a Value> {
@@ -551,5 +694,75 @@ mod tests {
         assert_eq!(chart.entries[0].previous, Some(3));
         assert_eq!(chart.entries[0].duration_ms, Some(243000));
         assert_eq!(chart.entries[0].artists, vec!["Penyanyi"]);
+    }
+
+    #[test]
+    fn parses_browse_categories_grid() {
+        let data = json!({
+            "browse": {
+                "grid": {
+                    "sections": [{
+                        "items": [
+                            {
+                                "title": "Anime",
+                                "color": "#0d73ec",
+                                "href": "/genre/0JQ5DAqbMKFziKOShCi009",
+                                "imageUrl": "https://i.scdn.co/image/anime.jpg"
+                            },
+                            {
+                                "title": "Punk",
+                                "color": "#e61e32",
+                                "href": "/genre/0JQ5DAqbMKFAjfauKLOZiv",
+                                "imageUrl": "https://i.scdn.co/image/punk.jpg"
+                            }
+                        ]
+                    }]
+                }
+            }
+        });
+
+        let categories = parse_browse_categories(&data);
+        assert_eq!(categories.len(), 2);
+        assert_eq!(categories[0].id, "0JQ5DAqbMKFziKOShCi009");
+        assert_eq!(categories[0].title, "Anime");
+        assert_eq!(categories[0].color.as_deref(), Some("#0d73ec"));
+        assert_eq!(categories[0].image_url.as_deref(), Some("https://i.scdn.co/image/anime.jpg"));
+        assert_eq!(categories[1].id, "0JQ5DAqbMKFAjfauKLOZiv");
+        assert_eq!(categories[1].title, "Punk");
+    }
+
+    #[test]
+    fn parses_genre_page_sections() {
+        let data = json!({
+            "browse": {
+                "pages": {
+                    "spotify:page:0JQ5DAqbMKFziKOShCi009": {
+                        "title": "Anime",
+                        "subtitle": "Anime hits and classics",
+                        "sections": [{
+                            "title": "Popular Anime Playlists",
+                            "items": [{
+                                "title": "Anime Now",
+                                "description": "The best new anime hits",
+                                "href": "/playlist/37i9dQZF1DX6uhv2X9VqT5",
+                                "imageUrl": "https://i.scdn.co/image/animenow.jpg",
+                                "followers": 1500000
+                            }]
+                        }]
+                    }
+                }
+            }
+        });
+
+        let page = parse_genre_page("0JQ5DAqbMKFziKOShCi009", &data).unwrap();
+        assert_eq!(page.id, "0JQ5DAqbMKFziKOShCi009");
+        assert_eq!(page.title, "Anime");
+        assert_eq!(page.subtitle.as_deref(), Some("Anime hits and classics"));
+        assert_eq!(page.sections.len(), 1);
+        assert_eq!(page.sections[0].title, "Popular Anime Playlists");
+        assert_eq!(page.sections[0].items.len(), 1);
+        assert_eq!(page.sections[0].items[0].title, "Anime Now");
+        assert_eq!(page.sections[0].items[0].followers, Some(1500000));
+        assert_eq!(page.sections[0].items[0].href, "/playlist/37i9dQZF1DX6uhv2X9VqT5");
     }
 }

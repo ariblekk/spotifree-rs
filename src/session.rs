@@ -17,17 +17,20 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::models::{
-    Charts, SearchResults, market_of, parse_chart_entries, parse_charts, parse_search, relabel,
+    BrowseCategory, Charts, GenrePage, SearchResults, market_of, parse_browse_categories,
+    parse_chart_entries, parse_charts, parse_genre_page, parse_search, relabel,
 };
 use crate::protocol::bundles::{
-    AppServerConfig, chunk_urls, extract_js_links, extract_query_hashes, extract_totp_secret,
-    parse_app_server_config,
+    AppServerConfig, chunk_urls, extract_js_links, extract_query_hashes, extract_script_base64,
+    extract_totp_secret, parse_app_server_config,
 };
 use crate::protocol::routes;
 use crate::protocol::totp::{decode_secret, generate_totp};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+const SSR_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
 const TEXT_ACCEPT: &str =
     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
@@ -645,6 +648,32 @@ impl Session {
         .await
     }
 
+    /// Artist discography releases (all, albums, singles, or compilations).
+    pub async fn artist_discography(
+        &self,
+        id: &str,
+        category: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value> {
+        validate_id(id, "artist")?;
+
+        let op = match category {
+            Some("album") | Some("albums") => "queryArtistDiscographyAlbums",
+            Some("single") | Some("singles") => "queryArtistDiscographySingles",
+            Some("compilation") | Some("compilations") => "queryArtistDiscographyCompilations",
+            _ => "queryArtistDiscographyAll",
+        };
+
+        let variables = json!({
+            "uri": format!("spotify:artist:{id}"),
+            "offset": offset,
+            "limit": limit.clamp(1, 100),
+        });
+
+        self.query_with_fallbacks(&[op], &variables).await
+    }
+
     /// Playlist metadata plus its tracks, as returned by pathfinder.
     ///
     /// Playlists longer than one upstream page are fetched in pages and merged,
@@ -746,6 +775,37 @@ impl Session {
         }
 
         Ok(charts)
+    }
+
+    /// Browse / explore categories from Spotify's search grid.
+    pub async fn browse_categories(&self) -> Result<Vec<BrowseCategory>> {
+        let response = self
+            .http
+            .get(routes::SEARCH_PAGE)
+            .header("user-agent", SSR_USER_AGENT)
+            .header("accept-language", &self.language)
+            .send()
+            .await?;
+        let html = ensure_ok(response).await?.text().await?;
+        let state = extract_script_base64(&html, "initialState")?;
+        Ok(parse_browse_categories(&state))
+    }
+
+    /// Genre page content by category/genre ID (e.g. `0JQ5DAqbMKFziKOShCi009`).
+    pub async fn genre(&self, id: &str) -> Result<GenrePage> {
+        validate_id(id, "genre")?;
+        let url = format!("{}{id}", routes::GENRE_PAGE);
+        let response = self
+            .http
+            .get(&url)
+            .header("user-agent", SSR_USER_AGENT)
+            .header("accept-language", &self.language)
+            .send()
+            .await?;
+        let html = ensure_ok(response).await?.text().await?;
+        let state = extract_script_base64(&html, "initialState")?;
+        parse_genre_page(id, &state)
+            .ok_or_else(|| Error::Protocol(format!("genre {id} not found")))
     }
 
     /// Fetch every page of a paginated collection and merge the pages into the

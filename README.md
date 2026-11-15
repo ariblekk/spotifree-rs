@@ -57,7 +57,7 @@ The frontend is a Vite + React SPA in `web/`, served by `src/bin/serve.rs` from
 ```bash
 cd web && npm install && npm run build   # -> web/dist
 cargo run --bin serve                    # http://localhost:8080
-curl "http://localhost:8080/api/search?q=lofi&limit=5"
+curl "http://localhost:8080/v1/search?q=lofi&limit=5"
 ```
 
 For UI work, run the Rust server and Vite side by side (Vite proxies to
@@ -87,19 +87,24 @@ all-in-one image and the Vite dev proxy both need.
 
 | Endpoint | Returns |
 | --- | --- |
-| `GET /api/search?q=<term>&limit=<1-100>&offset=<n>&type=<kinds>` | `SearchResults` JSON |
-| `GET /api/track/{id}` | pathfinder `trackUnion` JSON |
-| `GET /api/lyrics/{id}` | `{ isrc, lyrics }` (Spotify metadata + lrc.red/LRCLIB) |
-| `GET /api/album/{id}` | pathfinder `albumUnion` JSON (full track list) |
-| `GET /api/artist/{id}` | pathfinder `artistUnion` JSON (profile + discography) |
-| `GET /api/playlist/{id}` | pathfinder `playlistV2` JSON (items, up to 1000) |
-| `GET /api/charts/{id\|global}?top=<daily\|alltime>` | 50 ranked rows + `trending` / `popular_albums` / `popular_artists` |
-| `GET /healthz` | `warm`, `hashes`, `token_valid`, cache counters; `503` until warm |
-| `GET /`, `/api`, `/charts`, `/donate`, `/detail?...` | SPA pages |
+| `GET /v1/search?q=<term>&limit=<1-100>&offset=<n>&type=<kinds>` | `SearchResults` JSON |
+| `GET /v1/search/suggest?q=<term>` | search suggestion chips JSON |
+| `GET /v1/track/{id}` | pathfinder `trackUnion` JSON |
+| `GET /v1/track/{id}/credits` | contributors and sources JSON |
+| `GET /v1/track/{id}/recommendations` | recommended tracks JSON |
+| `GET /v1/album/{id}` | pathfinder `albumUnion` JSON (full track list) |
+| `GET /v1/artist/{id}` | pathfinder `artistUnion` JSON (profile + discography) |
+| `GET /v1/artist/{id}/discography` | artist releases (all, album, single, compilation) |
+| `GET /v1/playlist/{id}` | pathfinder `playlistV2` JSON (items, up to 1000) |
+| `GET /v1/browse` | browse / explore categories list (`id`, `title`, `color`, `image_url`) |
+| `GET /v1/genre/{id}` | curated genre page with sections (`playlists`, `releases`, subgenres) |
+| `GET /v1/charts/{id\|global}?top=<daily\|alltime>` | 50 ranked rows + `trending` / `popular_albums` / `popular_artists` |
+| `GET /healthz` | `warm`, `hashes`, `token_valid`, `uptime_secs`, `cache_bytes`, cache counters; `503` until warm |
+| `GET /`, `/docs`, `/charts`, `/donate`, `/detail?...` | SPA pages |
 
 `type` accepts `track,artist,album,playlist` and filters sections server-side.
 Detail endpoints return Spotify's object as-is. Unknown or failed upstream calls
-answer `502`, bad params `400`, unknown `/api/*` paths `404` — all as
+answer `502`, bad params `400`, unknown `/v1/*` paths `404` — all as
 `{"error": "..."}`.
 
 ## Configuration
@@ -137,9 +142,9 @@ The origin sends cacheable headers; tell Cloudflare to cache API paths
 | Rule | Expression | Cache | Edge TTL |
 | --- | --- | --- | --- |
 | Static assets | `starts_with(http.request.uri.path, "/assets/")` | Eligible | Respect origin (1 year) |
-| Public API | `starts_with(http.request.uri.path, "/api/")` | Eligible | Respect origin (30s–30m) |
+| Public API | `starts_with(http.request.uri.path, "/v1/")` | Eligible | Respect origin (30s–30m) |
 | Health | `http.request.uri.path eq "/healthz"` | Bypass | — |
-| SPA shell | `http.request.uri.path in {"/" "/detail" "/api" "/donate"}` | Bypass | — |
+| SPA shell | `http.request.uri.path in {"/" "/detail" "/docs" "/donate"}` | Bypass | — |
 
 API answers are public catalogue data keyed by full URL, so a shared cache never
 mixes users. Also enable **Brotli**, **Tiered Cache**, and **Cache Deception

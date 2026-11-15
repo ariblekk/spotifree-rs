@@ -81,6 +81,30 @@ pub fn parse_app_server_config(html: &str) -> Result<AppServerConfig> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+/// Decode a base64 JSON payload embedded in a `<script id="...">` tag.
+pub fn extract_script_base64(html: &str, tag_id: &str) -> Result<serde_json::Value> {
+    let tag = format!(r#"id="{tag_id}""#);
+    let start = html
+        .find(&tag)
+        .ok_or_else(|| Error::Protocol(format!("{tag_id} tag not found in HTML")))?;
+
+    let rest = &html[start..];
+    let tag_close = rest
+        .find('>')
+        .ok_or_else(|| Error::Protocol(format!("unclosed {tag_id} tag")))?;
+    let content = &rest[tag_close + 1..];
+    let end = content
+        .find("</script>")
+        .ok_or_else(|| Error::Protocol(format!("unterminated {tag_id} tag")))?;
+
+    let encoded = content[..end].trim();
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|err| Error::Protocol(format!("{tag_id} is not valid base64: {err}")))?;
+
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 /// Find the newest TOTP secret and its version in the web-player bundle.
 pub fn extract_totp_secret(js: &str) -> Option<(String, u32)> {
     secret_re()

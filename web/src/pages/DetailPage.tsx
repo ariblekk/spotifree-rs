@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
+  BadgeCheck,
   ChevronDown,
   ExternalLink,
   Loader2,
@@ -22,8 +23,8 @@ import {
   detail,
   detailHref,
   duration,
-  extras as fetchExtras,
   fetchCredits,
+  fetchLyrics,
   formatNumber,
   idFromUri,
   openOnSpotify,
@@ -32,6 +33,7 @@ import {
 import type {
   AlbumDetail,
   ArtistDetail,
+  ArtistPick,
   LocalTrack,
   Person,
   PlaylistDetail,
@@ -121,7 +123,15 @@ export default function DetailPage() {
         const track = normalizeTrack(body.trackUnion);
         document.title = `${track.name} — spotifree-rs`;
         const [extras, credits] = await Promise.all([
-          fetchExtras(id, controller.signal),
+          fetchLyrics(
+            {
+              title: track.name,
+              artist: track.artists[0]?.name || "",
+              album: track.album?.name,
+              durationMs: track.duration,
+            },
+            controller.signal,
+          ),
           fetchCredits(id, controller.signal),
         ]);
         if (controller.signal.aborted) return;
@@ -195,13 +205,7 @@ function Dot() {
   return <span className="px-1.5">·</span>;
 }
 
-function SpotifyLink({
-  uri,
-  className,
-}: {
-  uri: string;
-  className?: string;
-}) {
+function SpotifyLink({ uri, className }: { uri: string; className?: string }) {
   const href = spotifyUrl(uri);
   if (!href) return null;
 
@@ -390,6 +394,97 @@ function AlbumView({ album }: { album: AlbumDetail }) {
   );
 }
 
+function parseUri(uri: string): { type: DetailType; id: string } | null {
+  const parts = uri.split(":");
+  if (parts.length >= 3) {
+    const rawType = parts[parts.length - 2];
+    const id = parts[parts.length - 1];
+    if (
+      rawType === "album" ||
+      rawType === "artist" ||
+      rawType === "track" ||
+      rawType === "playlist"
+    ) {
+      return { type: rawType, id };
+    }
+  }
+  return null;
+}
+
+function formatSocialName(name: string): string {
+  const map: Record<string, string> = {
+    TWITTER: "Twitter / X",
+    INSTAGRAM: "Instagram",
+    FACEBOOK: "Facebook",
+    WIKIPEDIA: "Wikipedia",
+  };
+  return map[name.toUpperCase()] || name;
+}
+
+function ArtistPickCard({
+  pick,
+  artist,
+}: {
+  pick: ArtistPick;
+  artist: ArtistDetail;
+}) {
+  const target = parseUri(pick.uri);
+
+  const cardContent = (
+    <div className="flex items-center gap-3.5 rounded-xl border border-border bg-card p-3 transition-colors group-hover:border-primary/50 group-hover:bg-secondary/40">
+      {pick.image ? (
+        <img
+          src={pick.image}
+          alt=""
+          className="size-16 flex-none rounded-md bg-secondary object-cover"
+        />
+      ) : null}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-foreground group-hover:underline">
+          {pick.title}
+        </p>
+        {pick.subtitle ? (
+          <p className="truncate text-xs text-muted-foreground">
+            {pick.subtitle}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="mt-8 max-w-md">
+      <div className="mb-2 flex items-center gap-2">
+        {artist.image ? (
+          <img
+            src={artist.image}
+            alt=""
+            className="size-5 rounded-full object-cover"
+          />
+        ) : null}
+        <span className="text-[11px] font-bold tracking-wider text-muted-foreground uppercase">
+          Artist Pick
+        </span>
+      </div>
+      {pick.comment ? (
+        <p className="mb-2 text-sm italic text-foreground/80">
+          “{pick.comment}”
+        </p>
+      ) : null}
+      {target ? (
+        <Link
+          to={detailHref(target.type, target.id)}
+          className="group block no-underline hover:no-underline"
+        >
+          {cardContent}
+        </Link>
+      ) : (
+        <div className="group">{cardContent}</div>
+      )}
+    </div>
+  );
+}
+
 function ArtistView({ artist }: { artist: ArtistDetail }) {
   const stats: string[] = [];
   if (artist.listeners)
@@ -399,36 +494,80 @@ function ArtistView({ artist }: { artist: ArtistDetail }) {
 
   return (
     <>
-      <section className="flex flex-col gap-4">
-        <div className="flex items-center gap-5 max-[400px]:gap-3.5">
-          {artist.image ? (
+      <section className="relative overflow-hidden rounded-2xl border border-border bg-card">
+        {artist.headerImage ? (
+          <div className="relative h-44 w-full sm:h-56">
             <img
-              className="size-20 flex-none rounded-full bg-secondary object-cover sm:size-28"
-              src={artist.image}
+              src={artist.headerImage}
               alt=""
+              className="h-full w-full object-cover"
             />
-          ) : null}
-          <div className="min-w-0">
-            <p className="mb-1 text-[13px] tracking-[0.08em] text-muted-foreground uppercase">
-              Artist
-            </p>
-            <h1 className="mb-1.5 text-[clamp(1.5rem,3.4vw,2.25rem)] leading-[1.1] font-bold tracking-[-0.03em]">
-              {artist.name}
-            </h1>
-            {stats.length ? (
-              <p className="m-0 text-[15px] text-muted-foreground">
-                {stats.join(" · ")}
-              </p>
-            ) : null}
+            <div className="absolute inset-0 bg-gradient-to-t from-card via-card/50 to-transparent" />
           </div>
-        </div>
-        {artist.bio ? (
-          <p className="m-0 max-w-[70ch] text-[15px] whitespace-pre-line text-foreground/80">
-            {artist.bio}
-          </p>
         ) : null}
-        <SpotifyLink uri={artist.uri} />
+        <div
+          className={`flex flex-col gap-4 p-6 sm:p-8 ${
+            artist.headerImage ? "relative -mt-16 sm:-mt-20" : ""
+          }`}
+        >
+          <div className="flex items-center gap-5 max-[400px]:gap-3.5">
+            {artist.image ? (
+              <img
+                className="size-20 flex-none rounded-full border-2 border-card bg-secondary object-cover shadow-md sm:size-28"
+                src={artist.image}
+                alt=""
+              />
+            ) : null}
+            <div className="min-w-0">
+              <div className="mb-1 flex items-center gap-2">
+                <p className="text-[13px] tracking-[0.08em] text-muted-foreground uppercase">
+                  Artist
+                </p>
+                {artist.verified ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    <BadgeCheck className="size-3.5 fill-primary text-background" />
+                    Verified
+                  </span>
+                ) : null}
+              </div>
+              <h1 className="mb-1.5 text-[clamp(1.5rem,3.4vw,2.25rem)] leading-[1.1] font-bold tracking-[-0.03em]">
+                {artist.name}
+              </h1>
+              {stats.length ? (
+                <p className="m-0 text-[15px] text-muted-foreground">
+                  {stats.join(" · ")}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          {artist.bio ? (
+            <p className="m-0 max-w-[70ch] text-[15px] whitespace-pre-line text-foreground/80">
+              {artist.bio}
+            </p>
+          ) : null}
+          {artist.externalLinks && artist.externalLinks.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {artist.externalLinks.map((link) => (
+                <a
+                  key={link.url}
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/60 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  <span>{formatSocialName(link.name)}</span>
+                  <ExternalLink className="size-3 opacity-60" />
+                </a>
+              ))}
+            </div>
+          ) : null}
+          <SpotifyLink uri={artist.uri} />
+        </div>
       </section>
+
+      {artist.artistPick ? (
+        <ArtistPickCard pick={artist.artistPick} artist={artist} />
+      ) : null}
 
       {artist.topTracks.length ? (
         <>
@@ -632,13 +771,38 @@ function TrackFacts({
 }
 
 function stripTimestamps(text: string): string {
-  return text.replace(/^\s*(?:\[[0-9:.]+\]\s*)+/gm, "");
+  const lines = text.split(/\r?\n/).map((line) => {
+    let rest = line.trimStart();
+    while (rest.startsWith("[")) {
+      const closeIdx = rest.indexOf("]");
+      if (closeIdx === -1) break;
+      rest = rest.slice(closeIdx + 1).trimStart();
+    }
+    return rest.replace(/<[0-9:.]+>/g, "").trim();
+  });
+
+  return lines.join("\n").trim();
 }
 
 function lyricsLines(text: string) {
-  return text.split(/\r?\n/).map((raw, index) => {
-    const line = raw.trim();
+  const rawLines = text.trim().split(/\r?\n/);
+  const lines: string[] = [];
+  let prevEmpty = true; // true di awal untuk membuang baris kosong paling atas
 
+  for (const raw of rawLines) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      if (!prevEmpty) {
+        lines.push("");
+        prevEmpty = true;
+      }
+    } else {
+      lines.push(trimmed);
+      prevEmpty = false;
+    }
+  }
+
+  return lines.map((line, index) => {
     if (!line) return <div className="h-6" key={index} aria-hidden="true" />;
     if (/^\[[^\]]+\]$/.test(line))
       return (
@@ -652,7 +816,7 @@ function lyricsLines(text: string) {
 
     return (
       <p
-        className="mb-1 text-[clamp(1.3rem,2.6vw,1.8rem)] leading-[1.45] font-bold tracking-[-0.01em] text-foreground min-[821px]:text-[48px] min-[821px]:leading-[1.3]"
+        className="mb-1 text-[clamp(1.3rem,2.6vw,1.8rem)] leading-[1.45] font-bold tracking-[-0.01em] text-foreground first:mt-0 min-[821px]:text-[48px] min-[821px]:leading-[1.3]"
         key={index}
       >
         {line}
@@ -661,13 +825,7 @@ function lyricsLines(text: string) {
   });
 }
 
-function LyricsBody({
-  extras,
-  format,
-}: {
-  extras: Extras | null;
-  format: "text" | "lrc";
-}) {
+function LyricsBody({ extras }: { extras: Extras | null }) {
   const lyrics = extras?.lyrics;
 
   if (!lyrics || lyrics.instrumental || (!lyrics.plain && !lyrics.synced)) {
@@ -678,27 +836,23 @@ function LyricsBody({
             ? "Instrumental track — no lyrics to show."
             : "Lyrics not available yet."}
         </p>
-        <p className="mb-0">
-          ISRC:{" "}
-          <span className="font-mono text-sm text-foreground">
-            {extras?.isrc || "unavailable"}
-          </span>
-        </p>
+        {extras?.isrc ? (
+          <p className="mb-0">
+            ISRC:{" "}
+            <span className="font-mono text-sm text-foreground">
+              {extras.isrc}
+            </span>
+          </p>
+        ) : null}
       </div>
     );
   }
 
   return (
     <>
-      {format === "lrc" && lyrics.synced ? (
-        <pre className="m-0 font-mono text-[13px] leading-[1.7] whitespace-pre-wrap text-foreground/80">
-          {lyrics.synced}
-        </pre>
-      ) : (
-        <div>
-          {lyricsLines(lyrics.plain || stripTimestamps(lyrics.synced || ""))}
-        </div>
-      )}
+      <div>
+        {lyricsLines(lyrics.plain || stripTimestamps(lyrics.synced || ""))}
+      </div>
       <p className="mt-8.5 text-[13px] text-muted-foreground">
         Lyrics from {lyrics.source}.
       </p>
@@ -773,9 +927,7 @@ function FloatingPlayer({
           <p className="truncate text-xs font-semibold text-foreground">
             {title}
           </p>
-          <p className="truncate text-[10px] text-muted-foreground">
-            {artist}
-          </p>
+          <p className="truncate text-[10px] text-muted-foreground">{artist}</p>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <a
@@ -844,16 +996,15 @@ function TrackView({
   extras: Extras | null;
   credits: TrackCredits | null;
 }) {
-  const [format, setFormat] = useState<"text" | "lrc">("text");
   const [player, setPlayer] = useState<{
     status: "idle" | "searching" | "ready" | "error";
     videoId?: string;
     minimized?: boolean;
   }>({ status: "idle" });
 
-  const missing = lyricsMissing(extras);
   const artistNames = track.artists.map((a) => a.name).join(", ");
-  const searchQuery = `${track.artists.map((a) => a.name).join(" ")} ${track.name}`.trim();
+  const searchQuery =
+    `${track.artists.map((a) => a.name).join(" ")} ${track.name}`.trim();
 
   useEffect(() => {
     setPlayer({ status: "idle" });
@@ -874,15 +1025,6 @@ function TrackView({
       setPlayer({ status: "error" });
     }
   };
-
-  const formats = [
-    {
-      key: "lrc" as const,
-      label: "LRC",
-      available: Boolean(extras?.lyrics?.synced),
-    },
-    { key: "text" as const, label: "Text", available: true },
-  ];
 
   return (
     <section className="grid grid-cols-[minmax(280px,430px)_1fr] items-start gap-10 max-[820px]:grid-cols-1 max-[820px]:gap-8">
@@ -939,33 +1081,10 @@ function TrackView({
         </div>
 
         <TrackFacts track={track} credits={credits} extras={extras} />
-
-        {!missing ? (
-          <div className="mt-6.5 flex gap-5">
-            {formats.map((entry) => (
-              <button
-                key={entry.key}
-                type="button"
-                className={cn(
-                  "border-b-2 pb-1.5 text-sm transition-colors",
-                  entry.key === format
-                    ? "border-primary font-bold text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground",
-                  !entry.available &&
-                    "cursor-not-allowed text-muted-foreground/40 hover:text-muted-foreground/40",
-                )}
-                disabled={!entry.available}
-                onClick={() => setFormat(entry.key)}
-              >
-                {entry.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
       </aside>
 
       <div className="min-h-50">
-        <LyricsBody extras={extras} format={format} />
+        <LyricsBody extras={extras} />
       </div>
 
       {player.status === "ready" && player.videoId ? (

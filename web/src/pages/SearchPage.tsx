@@ -159,7 +159,7 @@ export default function SearchPage() {
     setStatus(`Searching for “${term}”…`);
 
     try {
-      const response = await fetch(apiUrl(`/api/search?q=${encodeURIComponent(term)}`), {
+      const response = await fetch(apiUrl(`/v1/search?q=${encodeURIComponent(term)}`), {
         signal: current.signal,
       });
       const body = (await response.json()) as SearchResults & {
