@@ -222,8 +222,11 @@ function TrackTable({ tracks }: { tracks: LocalTrack[] }) {
               <TableCell className="px-2 py-3 text-right text-muted-foreground max-[640px]:hidden">
                 {track.number || index + 1}
               </TableCell>
-              <TableCell className="px-2 py-3 align-top whitespace-normal">
-                <div className="truncate font-bold text-foreground">
+              <TableCell className="max-w-0 overflow-hidden px-2 py-3 align-top whitespace-normal">
+                <div
+                  className="truncate font-bold text-foreground"
+                  title={track.name}
+                >
                   {track.name || "(untitled)"}
                   {track.explicit ? (
                     <span className="ml-1.5 inline-block bg-muted px-1 align-middle text-[11px] leading-4 font-semibold text-muted-foreground">
@@ -232,7 +235,10 @@ function TrackTable({ tracks }: { tracks: LocalTrack[] }) {
                   ) : null}
                 </div>
                 {track.artists.length ? (
-                  <div className="truncate text-sm text-muted-foreground">
+                  <div
+                    className="truncate text-sm text-muted-foreground"
+                    title={track.artists.join(", ")}
+                  >
                     {track.artists.join(", ")}
                   </div>
                 ) : null}

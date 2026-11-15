@@ -330,7 +330,14 @@ export default function SearchPage() {
                   {tab.columns.map((column) => (
                     <TableCell
                       key={column.label}
-                      className={cn("px-2 py-3", column.cls)}
+                      className={cn(
+                        // The table is `table-fixed`, so a long value would
+                        // otherwise spill over the next column instead of
+                        // ellipsizing: `truncate` needs `overflow-hidden` on the
+                        // cell itself, and `max-w-0` lets the fixed width win.
+                        "max-w-0 overflow-hidden px-2 py-3",
+                        column.cls,
+                      )}
                     >
                       {column.media ? (
                         <div className="flex min-w-0 items-center gap-3.5">
@@ -343,12 +350,17 @@ export default function SearchPage() {
                             loading="lazy"
                             src={item.image || undefined}
                           />
-                          <span className="truncate font-bold text-foreground">
+                          <span
+                            className="truncate font-bold text-foreground"
+                            title={column.value(item)}
+                          >
                             {column.value(item) || "(untitled)"}
                           </span>
                         </div>
                       ) : (
-                        <span className="truncate">{column.value(item)}</span>
+                        <span className="block truncate" title={column.value(item)}>
+                          {column.value(item)}
+                        </span>
                       )}
                     </TableCell>
                   ))}

@@ -156,7 +156,7 @@ function ChartTable({ chart, limit }: { chart: Chart; limit: number }) {
               <TableCell className="px-2 py-3 text-right text-[15px] font-bold tabular-nums text-muted-foreground">
                 {entry.position}
               </TableCell>
-              <TableCell className="px-2 py-3 align-top whitespace-normal">
+              <TableCell className="max-w-0 overflow-hidden px-2 py-3 align-top whitespace-normal">
                 <div className="flex min-w-0 items-center gap-3">
                   <img
                     className="size-10 flex-none bg-secondary object-cover"
@@ -164,12 +164,18 @@ function ChartTable({ chart, limit }: { chart: Chart; limit: number }) {
                     loading="lazy"
                     src={entry.image || undefined}
                   />
-                  <div className="min-w-0">
-                    <div className="truncate font-bold text-foreground">
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className="truncate font-bold text-foreground"
+                      title={entry.name}
+                    >
                       {entry.name || "(untitled)"}
                     </div>
                     {entry.artists.length ? (
-                      <div className="truncate text-sm text-muted-foreground">
+                      <div
+                        className="truncate text-sm text-muted-foreground"
+                        title={entry.artists.join(", ")}
+                      >
                         {entry.artists.join(", ")}
                       </div>
                     ) : null}
