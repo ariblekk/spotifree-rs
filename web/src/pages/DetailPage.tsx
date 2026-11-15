@@ -2,6 +2,14 @@ import { Fragment, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
+  ChevronDown,
+  ExternalLink,
+  Loader2,
+  Play,
+  X,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
   Table,
   TableBody,
   TableCell,
@@ -169,13 +177,22 @@ function Dot() {
   return <span className="px-1.5">·</span>;
 }
 
-function SpotifyLink({ uri }: { uri: string }) {
+function SpotifyLink({
+  uri,
+  className,
+}: {
+  uri: string;
+  className?: string;
+}) {
   const href = spotifyUrl(uri);
   if (!href) return null;
 
   return (
     <a
-      className="mt-3 inline-block text-sm text-primary underline-offset-2 hover:underline"
+      className={cn(
+        "mt-3 inline-block text-sm text-primary underline-offset-2 hover:underline",
+        className,
+      )}
       href={href}
       target="_blank"
       rel="noopener"
@@ -597,6 +614,135 @@ function LyricsBody({
   );
 }
 
+const PIPED_INSTANCES = [
+  "https://api.piped.private.coffee",
+  "https://pipedapi.ducks.party",
+];
+
+async function searchYouTubeVideoId(
+  query: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const encoded = encodeURIComponent(query);
+  const fetchInstance = async (base: string) => {
+    const res = await fetch(`${base}/search?q=${encoded}&filter=videos`, {
+      signal: signal ?? AbortSignal.timeout(4500),
+    });
+    if (!res.ok) throw new Error("Failed");
+    const data = await res.json();
+    const items = data?.items;
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (item?.videoId) return item.videoId as string;
+        if (typeof item?.url === "string") {
+          const match = item.url.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+          if (match) return match[1];
+        }
+      }
+    }
+    throw new Error("No video found");
+  };
+
+  try {
+    return await Promise.any(
+      PIPED_INSTANCES.map((base) => fetchInstance(base)),
+    );
+  } catch {
+    return null;
+  }
+}
+
+interface FloatingPlayerProps {
+  videoId: string;
+  title: string;
+  artist: string;
+  minimized: boolean;
+  onToggleMinimize: () => void;
+  onClose: () => void;
+}
+
+function FloatingPlayer({
+  videoId,
+  title,
+  artist,
+  minimized,
+  onToggleMinimize,
+  onClose,
+}: FloatingPlayerProps) {
+  const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+  return (
+    <aside
+      aria-label="YouTube Player"
+      className="fixed right-3 bottom-3 z-50 w-84 max-sm:w-56 overflow-hidden rounded-none border border-border bg-card shadow-2xl transition-all duration-200"
+    >
+      <div className="flex items-center justify-between gap-1.5 px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-semibold text-foreground">
+            {title}
+          </p>
+          <p className="truncate text-[10px] text-muted-foreground">
+            {artist}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <a
+            href={ytUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Buka di YouTube"
+            className="rounded-none p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ExternalLink className="size-3.5" />
+          </a>
+          <button
+            type="button"
+            onClick={onToggleMinimize}
+            title={minimized ? "Buka pemutar" : "Ciutkan pemutar"}
+            className="cursor-pointer rounded-none p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ChevronDown
+              className={cn(
+                "size-3.5 transition-transform duration-300 ease-in-out",
+                minimized && "rotate-180",
+              )}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Tutup pemutar"
+            className="cursor-pointer rounded-none p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <div
+        className={cn(
+          "grid transition-[grid-template-rows,opacity] duration-300 ease-in-out",
+          minimized
+            ? "grid-rows-[0fr] opacity-0"
+            : "grid-rows-[1fr] opacity-100",
+        )}
+      >
+        <div className="overflow-hidden">
+          <div className="aspect-video w-full bg-black">
+            <iframe
+              src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1`}
+              title={`${title} - ${artist}`}
+              className="h-full w-full border-0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 function TrackView({
   track,
   extras,
@@ -605,7 +751,35 @@ function TrackView({
   extras: Extras | null;
 }) {
   const [format, setFormat] = useState<"text" | "lrc">("text");
+  const [player, setPlayer] = useState<{
+    status: "idle" | "searching" | "ready" | "error";
+    videoId?: string;
+    minimized?: boolean;
+  }>({ status: "idle" });
+
   const missing = lyricsMissing(extras);
+  const artistNames = track.artists.map((a) => a.name).join(", ");
+  const searchQuery = `${track.artists.map((a) => a.name).join(" ")} ${track.name}`.trim();
+
+  useEffect(() => {
+    setPlayer({ status: "idle" });
+  }, [track.uri]);
+
+  const handlePlay = async () => {
+    if (player.status === "ready") {
+      setPlayer((p) => ({ ...p, minimized: false }));
+      return;
+    }
+    if (player.status === "searching") return;
+
+    setPlayer({ status: "searching" });
+    const videoId = await searchYouTubeVideoId(searchQuery);
+    if (videoId) {
+      setPlayer({ status: "ready", videoId, minimized: false });
+    } else {
+      setPlayer({ status: "error" });
+    }
+  };
 
   const formats = [
     {
@@ -646,6 +820,30 @@ function TrackView({
           </div>
         </div>
 
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            className="h-9 cursor-pointer rounded-none bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/80"
+            onClick={handlePlay}
+            disabled={player.status === "searching"}
+          >
+            {player.status === "searching" ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                <span>Mencari...</span>
+              </>
+            ) : (
+              <>
+                <Play className="size-4 fill-current" />
+                <span>
+                  {player.status === "ready" ? "Buka Pemutar" : "Putar Lagu"}
+                </span>
+              </>
+            )}
+          </Button>
+          <SpotifyLink uri={track.uri} className="mt-0" />
+        </div>
+
         <TrackFacts track={track} extras={extras} />
 
         {!missing ? (
@@ -670,13 +868,63 @@ function TrackView({
             ))}
           </div>
         ) : null}
-
-        <SpotifyLink uri={track.uri} />
       </aside>
 
       <div className="min-h-50">
         <LyricsBody extras={extras} format={format} />
       </div>
+
+      {player.status === "ready" && player.videoId ? (
+        <FloatingPlayer
+          videoId={player.videoId}
+          title={track.name}
+          artist={artistNames}
+          minimized={Boolean(player.minimized)}
+          onToggleMinimize={() =>
+            setPlayer((p) => ({ ...p, minimized: !p.minimized }))
+          }
+          onClose={() => setPlayer({ status: "idle" })}
+        />
+      ) : null}
+
+      {player.status === "error" ? (
+        <div className="fixed right-3 bottom-3 max-sm:right-2.5 max-sm:bottom-2.5 z-50 w-76 max-sm:w-60 rounded-none border border-destructive/40 bg-card p-3 shadow-2xl">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-sm font-semibold text-foreground">
+              Video tidak ditemukan
+            </p>
+            <button
+              type="button"
+              onClick={() => setPlayer({ status: "idle" })}
+              className="cursor-pointer text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Tidak dapat memuat video otomatis. Buka langsung di YouTube.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <a
+              href={`https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              <ExternalLink className="size-3" />
+              Buka YouTube
+            </a>
+            <Button
+              variant="outline"
+              size="xs"
+              className="h-auto cursor-pointer py-1.5 text-xs"
+              onClick={handlePlay}
+            >
+              Coba Lagi
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
