@@ -53,9 +53,12 @@ const MAX_OFFSET: usize = 10_000;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1800);
 
 const TTL_SEARCH: Duration = Duration::from_secs(30);
+const TTL_SUGGEST: Duration = Duration::from_secs(60);
 const TTL_TRACK: Duration = Duration::from_secs(120);
 const TTL_COLLECTION: Duration = Duration::from_secs(300);
+const TTL_RECOMMENDATIONS: Duration = Duration::from_secs(300);
 const TTL_LYRICS: Duration = Duration::from_secs(1800);
+const TTL_CREDITS: Duration = Duration::from_secs(1800);
 /// Charts update a few times a day at most, so they can be cached harder.
 const TTL_CHARTS: Duration = Duration::from_secs(900);
 
@@ -284,6 +287,12 @@ struct SearchParams {
     types: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+struct SuggestParams {
+    #[serde(default)]
+    q: String,
+}
+
 #[derive(Deserialize)]
 struct ChartParams {
     /// `id` (Indonesia) or `global`; also accepts `ID`/`GLOBAL`.
@@ -341,9 +350,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cors = Cors::from(&state.config);
     let app = Router::new()
         .route("/api/search", get(search))
+        .route("/api/search/suggest", get(search_suggest))
         .route("/api/charts", get(charts))
         .route("/api/charts/{country}", get(charts_country))
         .route("/api/track/{id}", get(track_detail))
+        .route("/api/track/{id}/credits", get(track_credits))
+        .route("/api/track/{id}/recommendations", get(track_recommendations))
+        .route("/api/track/{id}/related", get(track_recommendations))
         .route("/api/lyrics/{id}", get(track_lyrics))
         .route("/api/album/{id}", get(album_detail))
         .route("/api/artist/{id}", get(artist_detail))
@@ -353,6 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/index.html", get(legacy_page))
         .route("/detail.html", get(legacy_page))
         .route("/api.html", get(legacy_page))
+        .route("/docs.html", get(legacy_page))
         .route("/donate.html", get(legacy_page))
         .nest_service("/assets", ServeDir::new(format!("{dist}/assets")))
         // Client-side routes (`/`, `/api`, `/donate`, `/detail`) all render from
@@ -454,7 +468,7 @@ async fn legacy_page(uri: axum::http::Uri) -> axum::response::Redirect {
     let route = match uri.path() {
         "/index.html" => "/",
         "/detail.html" => "/detail",
-        "/api.html" => "/api",
+        "/api.html" | "/docs.html" => "/docs",
         _ => "/donate",
     };
     let query = uri
@@ -504,11 +518,110 @@ async fn search(
     }
 }
 
+async fn search_suggest(
+    State(state): State<Arc<App>>,
+    Query(params): Query<SuggestParams>,
+) -> Response {
+    let query = params.q.trim();
+    if query.is_empty() {
+        return json_body(Bytes::from_static(
+            b"{\"searchV2\":{\"query\":\"\",\"topResultsV2\":{\"itemsV2\":[]}}}",
+        ));
+    }
+    if query.chars().count() > MAX_QUERY_LEN {
+        return deny(StatusCode::BAD_REQUEST, "q is too long");
+    }
+
+    let key = format!("suggest:{query}");
+
+    let fetched = state
+        .cache
+        .get_or_fetch(key, TTL_SUGGEST, async {
+            match state.session.search_suggestions(query).await {
+                Ok(data) => Some(Bytes::from(
+                    serde_json::to_vec(&data).unwrap_or_default(),
+                )),
+                Err(error) => {
+                    eprintln!("search_suggestions failed: {error}");
+                    None
+                }
+            }
+        })
+        .await;
+
+    match fetched {
+        Some(body) => json_body(body),
+        None => deny(StatusCode::BAD_GATEWAY, "upstream search failed"),
+    }
+}
+
 async fn track_detail(
     State(state): State<Arc<App>>,
     Path(id): Path<String>,
 ) -> Response {
     lookup(&state, Detail::Track, &id).await
+}
+
+async fn track_credits(
+    State(state): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Response {
+    if !valid_id(&id) {
+        return deny(StatusCode::BAD_REQUEST, "invalid track id");
+    }
+
+    let key = format!("credits:{id}");
+
+    let fetched = state
+        .cache
+        .get_or_fetch(key, TTL_CREDITS, async {
+            match state.session.track_credits(&id).await {
+                Ok(data) => Some(Bytes::from(
+                    serde_json::to_vec(&data).unwrap_or_default(),
+                )),
+                Err(error) => {
+                    eprintln!("track_credits failed: {error}");
+                    None
+                }
+            }
+        })
+        .await;
+
+    match fetched {
+        Some(body) => json_body(body),
+        None => deny(StatusCode::BAD_GATEWAY, "upstream request failed"),
+    }
+}
+
+async fn track_recommendations(
+    State(state): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Response {
+    if !valid_id(&id) {
+        return deny(StatusCode::BAD_REQUEST, "invalid track id");
+    }
+
+    let key = format!("recommendations:{id}");
+
+    let fetched = state
+        .cache
+        .get_or_fetch(key, TTL_RECOMMENDATIONS, async {
+            match state.session.track_recommendations(&id).await {
+                Ok(data) => Some(Bytes::from(
+                    serde_json::to_vec(&data).unwrap_or_default(),
+                )),
+                Err(error) => {
+                    eprintln!("track_recommendations failed: {error}");
+                    None
+                }
+            }
+        })
+        .await;
+
+    match fetched {
+        Some(body) => json_body(body),
+        None => deny(StatusCode::BAD_GATEWAY, "upstream request failed"),
+    }
 }
 
 /// Charts for Indonesia (`id`) or the world (`global`).
@@ -976,12 +1089,14 @@ fn cache_control(path: &str) -> &'static str {
         "public, max-age=31536000, immutable"
     } else if path == "/healthz" {
         "no-store"
-    } else if path == "/api/search" {
+    } else if path == "/api/search" || path == "/api/search/suggest" {
         "public, max-age=30, stale-while-revalidate=60"
     } else if path.starts_with("/api/charts") {
         "public, max-age=900, stale-while-revalidate=600"
-    } else if path.starts_with("/api/lyrics/") {
+    } else if path.starts_with("/api/lyrics/") || path.ends_with("/credits") {
         "public, max-age=1800, stale-while-revalidate=300"
+    } else if path.ends_with("/recommendations") || path.ends_with("/related") {
+        "public, max-age=300, stale-while-revalidate=120"
     } else if path.starts_with("/api/track/") {
         "public, max-age=120, stale-while-revalidate=60"
     } else if path.starts_with("/api/album/")
@@ -1034,6 +1149,7 @@ fn reject_unknown_api(path: &str) -> Option<Response> {
     let rest = path.strip_prefix("/api/")?;
 
     let known = rest == "search"
+        || rest == "search/suggest"
         || rest == "charts"
         || ["track/", "lyrics/", "album/", "artist/", "playlist/", "charts/"]
             .iter()
@@ -1059,7 +1175,13 @@ async fn reject_missing_files(request: Request, next: Next) -> Response {
     let last = path.rsplit('/').next().unwrap_or_default();
 
     // The legacy `.html` routes above redirect before the SPA ever sees them.
-    let legacy = ["/index.html", "/detail.html", "/api.html", "/donate.html"];
+    let legacy = [
+        "/index.html",
+        "/detail.html",
+        "/api.html",
+        "/docs.html",
+        "/donate.html",
+    ];
 
     if path.starts_with("/api/") || legacy.contains(&path.as_str()) || !last.contains('.') {
         return next.run(request).await;
@@ -1132,6 +1254,9 @@ mod tests {
 
         assert!(reject_unknown_api("/api").is_none());
         assert!(reject_unknown_api("/api/search").is_none());
+        assert!(reject_unknown_api("/api/search/suggest").is_none());
+        assert!(reject_unknown_api("/api/track/abc/credits").is_none());
+        assert!(reject_unknown_api("/api/track/abc/recommendations").is_none());
         assert!(reject_unknown_api("/api/album/abc").is_none());
         assert!(reject_unknown_api("/detail").is_none());
     }
@@ -1248,10 +1373,14 @@ mod tests {
         assert_eq!(cache_control("/api/typo"), "no-store");
         assert_eq!(cache_control("/"), "no-cache");
         assert!(cache_control("/api/search").starts_with("public, max-age=30"));
+        assert!(cache_control("/api/search/suggest").starts_with("public, max-age=30"));
         assert!(cache_control("/api/charts").starts_with("public, max-age=900"));
         assert!(cache_control("/api/charts/ID").starts_with("public, max-age=900"));
         assert!(cache_control("/api/album/x").starts_with("public, max-age=300"));
         assert!(cache_control("/api/lyrics/x").starts_with("public, max-age=1800"));
+        assert!(cache_control("/api/track/x/credits").starts_with("public, max-age=1800"));
+        assert!(cache_control("/api/track/x/recommendations").starts_with("public, max-age=300"));
+        assert!(cache_control("/api/track/x/related").starts_with("public, max-age=300"));
     }
 
     #[test]

@@ -247,7 +247,7 @@ function Note({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-export default function ApiPage() {
+export default function DocsPage() {
   return (
     <main className="mx-auto max-w-[1400px] px-6 pt-14 pb-22 max-sm:px-4 max-sm:pt-9 max-sm:pb-15">
       <h1 className="mb-2.5 text-[42px] leading-[1.1] font-bold tracking-[-0.03em] max-sm:text-[clamp(1.6rem,7vw,2.4rem)]">
@@ -302,6 +302,11 @@ export default function ApiPage() {
           </Table>
         </Endpoint>
 
+        <Endpoint path="/api/search/suggest?q={query}">
+          Instant search suggestions (top hits and autocomplete query chips) as
+          the user types.
+        </Endpoint>
+
         <Endpoint path="/api/charts/{country}">
           Charts for <code>id</code> or <code>global</code>: the ranked chart
           (50 rows), trending songs, popular albums and artists. See{" "}
@@ -316,6 +321,16 @@ export default function ApiPage() {
 
         <Endpoint path="/api/track/{id}">
           One track: name, artists, album, duration, cover.
+        </Endpoint>
+
+        <Endpoint path="/api/track/{id}/credits">
+          Track credits: songwriters, producers, performers, publishers, and record
+          labels.
+        </Endpoint>
+
+        <Endpoint path="/api/track/{id}/recommendations">
+          Seeded recommended tracks related to this track (also available at{" "}
+          <code>/api/track/{"{id}"}/related</code>).
         </Endpoint>
 
         <Endpoint path="/api/album/{id}">

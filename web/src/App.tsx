@@ -1,8 +1,8 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import Layout from "@/components/Layout";
-import ApiPage from "@/pages/ApiPage";
 import ChartsPage from "@/pages/ChartsPage";
 import DetailPage from "@/pages/DetailPage";
+import DocsPage from "@/pages/DocsPage";
 import DonatePage from "@/pages/DonatePage";
 import SearchPage from "@/pages/SearchPage";
 
@@ -11,7 +11,9 @@ import SearchPage from "@/pages/SearchPage";
 const LEGACY: Record<string, string> = {
   "/index.html": "/",
   "/detail.html": "/detail",
-  "/api.html": "/api",
+  "/api.html": "/docs",
+  "/api": "/docs",
+  "/docs.html": "/docs",
   "/donate.html": "/donate",
 };
 
@@ -29,16 +31,16 @@ function NotFound() {
       </h1>
       <p className="max-w-[62ch] text-[17px] text-muted-foreground">
         No page here. Try the{" "}
-        <a href="/" className="text-primary underline-offset-2 hover:underline">
+        <Link to="/" className="text-primary underline-offset-2 hover:underline">
           search
-        </a>{" "}
+        </Link>{" "}
         or the{" "}
-        <a
-          href="/api"
+        <Link
+          to="/docs"
           className="text-primary underline-offset-2 hover:underline"
         >
-          API notes
-        </a>
+          API docs
+        </Link>
         .
       </p>
     </main>
@@ -52,7 +54,8 @@ export default function App() {
         <Route path="/" element={<SearchPage />} />
         <Route path="/charts" element={<ChartsPage />} />
         <Route path="/detail" element={<DetailPage />} />
-        <Route path="/api" element={<ApiPage />} />
+        <Route path="/docs" element={<DocsPage />} />
+        <Route path="/api" element={<Navigate replace to="/docs" />} />
         <Route path="/donate" element={<DonatePage />} />
         <Route path="*" element={<LegacyRedirect />} />
       </Routes>

@@ -535,6 +535,40 @@ impl Session {
             .await
     }
 
+    /// Track credits (songwriters, producers, performers).
+    pub async fn track_credits(&self, id: &str) -> Result<Value> {
+        validate_id(id, "track")?;
+
+        let variables = json!({ "trackUri": format!("spotify:track:{id}") });
+
+        self.query_with_fallbacks(
+            &["queryTrackCreditsGroupedModal", "trackCreditsGroupedModal"],
+            &variables,
+        )
+        .await
+    }
+
+    /// Related/recommended tracks seeded by track URI.
+    pub async fn track_recommendations(&self, id: &str) -> Result<Value> {
+        validate_id(id, "track")?;
+
+        let variables = json!({ "uri": format!("spotify:track:{id}") });
+
+        self.query_with_fallbacks(
+            &["internalLinkRecommenderTrack", "seoRecommendedTrackPlaylistDesktop"],
+            &variables,
+        )
+        .await
+    }
+
+    /// Instant search suggestions as the user types.
+    pub async fn search_suggestions(&self, query: &str) -> Result<Value> {
+        let variables = json!({ "query": query });
+
+        self.query_with_fallbacks(&["searchSuggestions"], &variables)
+            .await
+    }
+
     /// ISRC for a track, read from Spotify's protobuf track metadata.
     ///
     /// The GraphQL `getTrack` never exposes it, but the spclient `Track`

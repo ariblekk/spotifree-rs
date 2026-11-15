@@ -89,6 +89,18 @@ export interface Extras {
   lyrics: Lyrics | null;
 }
 
+export interface Contributor {
+  name: string;
+  role: string;
+  roleGroup?: string | null;
+  uri?: string | null;
+}
+
+export interface TrackCredits {
+  contributors: Contributor[];
+  sources: string[];
+}
+
 export type DetailType = "album" | "artist" | "track" | "playlist";
 
 /// `GET /api/{type}/{id}` — Spotify wraps the object under a per-type key.
@@ -165,6 +177,50 @@ export async function extras(
       `/api/lyrics/${encodeURIComponent(id)}`,
       signal,
     );
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchCredits(
+  id: string,
+  signal?: AbortSignal,
+): Promise<TrackCredits | null> {
+  try {
+    const raw = await getJson<{
+      trackUnion?: {
+        creditsTrait?: {
+          contributors?: {
+            items?: Array<{
+              name: string;
+              role: string;
+              roleGroup?: { name: string } | null;
+              uri?: string | null;
+            }>;
+          };
+          sources?: {
+            items?: Array<{ name: string }>;
+          };
+        };
+      };
+    }>(`/api/track/${encodeURIComponent(id)}/credits`, signal);
+
+    const trait = raw?.trackUnion?.creditsTrait;
+    if (!trait) return null;
+
+    const contributors: Contributor[] = (trait.contributors?.items ?? []).map(
+      (c) => ({
+        name: c.name,
+        role: c.role,
+        roleGroup: c.roleGroup?.name ?? null,
+        uri: c.uri ?? null,
+      }),
+    );
+    const sources: string[] = (trait.sources?.items ?? [])
+      .map((s) => s.name)
+      .filter(Boolean);
+
+    return { contributors, sources };
   } catch {
     return null;
   }

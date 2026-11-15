@@ -17,12 +17,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { DetailType, Extras } from "@/lib/api";
+import type { Contributor, DetailType, Extras, TrackCredits } from "@/lib/api";
 import {
   detail,
   detailHref,
   duration,
   extras as fetchExtras,
+  fetchCredits,
   formatNumber,
   idFromUri,
   openOnSpotify,
@@ -49,7 +50,12 @@ type Loaded =
   | { kind: "album"; album: AlbumDetail }
   | { kind: "artist"; artist: ArtistDetail }
   | { kind: "playlist"; playlist: PlaylistDetail }
-  | { kind: "track"; track: TrackDetail; extras: Extras | null };
+  | {
+      kind: "track";
+      track: TrackDetail;
+      extras: Extras | null;
+      credits: TrackCredits | null;
+    };
 
 type View =
   | { status: "loading" }
@@ -114,9 +120,15 @@ export default function DetailPage() {
         if (!body.trackUnion) throw new Error("track not found");
         const track = normalizeTrack(body.trackUnion);
         document.title = `${track.name} — spotifree-rs`;
-        const extras = await fetchExtras(id, controller.signal);
+        const [extras, credits] = await Promise.all([
+          fetchExtras(id, controller.signal),
+          fetchCredits(id, controller.signal),
+        ]);
         if (controller.signal.aborted) return;
-        setView({ status: "ok", loaded: { kind: "track", track, extras } });
+        setView({
+          status: "ok",
+          loaded: { kind: "track", track, extras, credits },
+        });
       } catch (error) {
         if (controller.signal.aborted) return;
 
@@ -155,7 +167,13 @@ function Detail({ loaded }: { loaded: Loaded }) {
     case "playlist":
       return <PlaylistView playlist={loaded.playlist} />;
     case "track":
-      return <TrackView track={loaded.track} extras={loaded.extras} />;
+      return (
+        <TrackView
+          track={loaded.track}
+          extras={loaded.extras}
+          credits={loaded.credits}
+        />
+      );
   }
 }
 
@@ -492,11 +510,45 @@ function lyricsMissing(extras: Extras | null): boolean {
   return !lyrics || lyrics.instrumental || (!lyrics.plain && !lyrics.synced);
 }
 
+function renderContributors(list: Contributor[]) {
+  const seen = new Set<string>();
+  const unique = list.filter((c) => {
+    if (!c.name || seen.has(c.name)) return false;
+    seen.add(c.name);
+    return true;
+  });
+
+  return (
+    <span>
+      {unique.map((c, i) => {
+        const artistId = c.uri ? idFromUri(c.uri) : null;
+        return (
+          <Fragment key={`${c.name}-${i}`}>
+            {i > 0 ? ", " : ""}
+            {artistId ? (
+              <Link
+                to={detailHref("artist", artistId)}
+                className="underline-offset-2 hover:underline"
+              >
+                {c.name}
+              </Link>
+            ) : (
+              c.name
+            )}
+          </Fragment>
+        );
+      })}
+    </span>
+  );
+}
+
 function TrackFacts({
   track,
+  credits,
   extras,
 }: {
   track: TrackDetail;
+  credits: TrackCredits | null;
   extras: Extras | null;
 }) {
   const rows: Array<[string, ReactNode]> = [];
@@ -517,8 +569,48 @@ function TrackFacts({
     ]);
   }
   if (track.album?.year) rows.push(["Released", String(track.album.year)]);
-  if (track.duration) rows.push(["Length", duration(track.duration)]);
-  if (track.playcount) rows.push(["Plays", formatNumber(track.playcount)]);
+
+  if (credits) {
+    const writers: Contributor[] = [];
+    const producers: Contributor[] = [];
+
+    for (const c of credits.contributors) {
+      const group = c.roleGroup || "";
+      const role = c.role || "";
+      if (
+        group.includes("Composition") ||
+        group.includes("Lyric") ||
+        /writer|composer|lyricist|author/i.test(role)
+      ) {
+        writers.push(c);
+      } else if (
+        group.includes("Production") ||
+        group.includes("Producer") ||
+        /producer/i.test(role)
+      ) {
+        producers.push(c);
+      }
+    }
+
+    if (writers.length > 0) {
+      rows.push(["Writers", renderContributors(writers)]);
+    }
+    if (producers.length > 0) {
+      rows.push(["Producers", renderContributors(producers)]);
+    }
+    if (credits.sources.length > 0) {
+      rows.push(["Label", credits.sources.join(", ")]);
+    }
+  }
+
+  const hasCredits = rows.some(
+    ([k]) => k === "Writers" || k === "Producers" || k === "Label",
+  );
+  if (!hasCredits) {
+    if (track.duration) rows.push(["Length", duration(track.duration)]);
+    if (track.playcount) rows.push(["Plays", formatNumber(track.playcount)]);
+  }
+
   if (lyricsMissing(extras) && extras?.isrc) rows.push(["ISRC", extras.isrc]);
 
   return (
@@ -746,9 +838,11 @@ function FloatingPlayer({
 function TrackView({
   track,
   extras,
+  credits,
 }: {
   track: TrackDetail;
   extras: Extras | null;
+  credits: TrackCredits | null;
 }) {
   const [format, setFormat] = useState<"text" | "lrc">("text");
   const [player, setPlayer] = useState<{
@@ -844,7 +938,7 @@ function TrackView({
           <SpotifyLink uri={track.uri} className="mt-0" />
         </div>
 
-        <TrackFacts track={track} extras={extras} />
+        <TrackFacts track={track} credits={credits} extras={extras} />
 
         {!missing ? (
           <div className="mt-6.5 flex gap-5">
