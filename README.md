@@ -102,6 +102,7 @@ all-in-one image and the Vite dev proxy both need.
 | `GET /v1/donate` | `{ qris, amounts, max }` — whether QRIS is configured, plus presets |
 | `POST /v1/donate/qris` `{"amount":25000}` | dynamic QRIS bill: `qris_id`, `amount`, `qris_code`, `expires_at` |
 | `GET /v1/donate/qris/{id}` | `{ paid, status }` for polling a bill |
+| `POST /v1/donate/webhook` | gateway callback (`payment.settled`), HMAC-SHA256 verified |
 | `GET /healthz` | `warm`, `hashes`, `token_valid`, `uptime_secs`, `cache_bytes`, cache counters; `503` until warm |
 | `GET /`, `/docs`, `/charts`, `/donate`, `/detail?...` | SPA pages |
 
@@ -123,7 +124,7 @@ on a private network.
 | `BIND` | `0.0.0.0` | Listen address; use `127.0.0.1` for local-only |
 | `FRONTEND_DIR` | `web/dist` | Directory holding the built frontend (unused when it is not present) |
 | `QRIS_BASE_URL` | unset | Payment gateway base URL, e.g. `https://qris.blek.my.id`. Enables the QRIS card on `/donate` |
-| `QRIS_API_KEY` | unset | Gateway application key (`gopay_live_...`). Server-side only — it never reaches the browser |
+| `QRIS_API_KEY` | unset | Gateway application key (`gopay_live_...`). Server-side only — it never reaches the browser, and doubles as the webhook HMAC secret |
 
 Every response gets `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy:
 no-referrer` and a restrictive CSP; upstream error bodies are never returned.

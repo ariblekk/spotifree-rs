@@ -43,6 +43,10 @@ Versions use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `POST /v1/donate/qris`, `GET /v1/donate/qris/{id}` polling and a `GET /v1/donate`
   capability probe. The gateway key stays on the server (`QRIS_BASE_URL` /
   `QRIS_API_KEY`); the card hides when it is unset. Saweria stays as a fallback.
+- `POST /v1/donate/webhook`: receives `payment.settled` from the gateway, verifies
+  the `X-Gateway-Signature` HMAC-SHA256 over `{timestamp}.{body}` (5-minute replay
+  window, constant-time compare) and records the bill in memory, so polling
+  answers `paid` instantly. Register it in the gateway dashboard.
 - "Play on YouTube" direct action on track details.
 - Search suggestion chips on the search page.
 - `GET /v1/charts/{id|global}` (and `/v1/charts`): ranked chart plus trending

@@ -308,6 +308,11 @@ struct App {
     session: Session,
     cache: Cache,
     config: Config,
+    /// Bills the gateway already settled (`qris_id` → transaction id), so the
+    /// browser sees `paid` the moment the webhook lands instead of waiting for
+    /// the next poll round trip. Kept in memory on purpose: a donation is
+    /// confirmed by the gateway, not by this process remembering it.
+    paid: Mutex<HashMap<String, String>>,
     started_at: Instant,
 }
 
@@ -377,6 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session,
         cache: Cache::default(),
         config,
+        paid: Mutex::new(HashMap::new()),
         started_at: Instant::now(),
     });
 
@@ -422,6 +428,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/donate", get(donate_info))
         .route("/v1/donate/qris", post(donate_qris))
         .route("/v1/donate/qris/{id}", get(donate_status))
+        .route("/v1/donate/webhook", post(donate_webhook))
         .route("/healthz", get(health))
         // Pre-Vite URLs, still linked from bookmarks and notes.
         .route("/index.html", get(legacy_page))
@@ -903,6 +910,19 @@ async fn donate_status(
         return deny(StatusCode::BAD_REQUEST, "invalid payment id");
     }
 
+    // Settled by the webhook already: answer without a round trip, which is what
+    // makes the dialog flip to "paid" the moment the transfer lands.
+    if let Ok(paid) = state.paid.lock()
+        && let Some(transaction) = paid.get(&id)
+    {
+        return Json(serde_json::json!({
+            "paid": true,
+            "status": "PAID",
+            "transaction_id": transaction,
+        }))
+        .into_response();
+    }
+
     let answer = PAYMENTS
         .get(format!("{}/api/qr-status/{id}", gateway.base))
         .send()
@@ -938,6 +958,123 @@ fn now_millis() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
         .unwrap_or_default()
+}
+
+/// Webhooks older than this are refused, so a captured request cannot be
+/// replayed tomorrow.
+const WEBHOOK_TOLERANCE_SECS: u64 = 300;
+
+/// `payment.settled` receiver. The gateway signs `{timestamp}.{raw body}` with
+/// the application key (HMAC-SHA256, Stripe style), so the body is verified
+/// before anything is written. Register this URL in the gateway dashboard as
+/// `https://<host>/v1/donate/webhook`.
+async fn donate_webhook(
+    State(state): State<Arc<App>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(gateway) = state.config.qris.as_ref() else {
+        return deny(StatusCode::SERVICE_UNAVAILABLE, "QRIS is not configured");
+    };
+
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+
+    let (Some(timestamp), Some(signature)) = (
+        header("x-gateway-timestamp"),
+        header("x-gateway-signature"),
+    ) else {
+        return deny(StatusCode::BAD_REQUEST, "missing signature headers");
+    };
+
+    // Reject stale deliveries: the timestamp is part of the signed payload.
+    let Ok(sent_at) = timestamp.parse::<i64>() else {
+        return deny(StatusCode::BAD_REQUEST, "bad timestamp");
+    };
+    let now = (now_millis() / 1000) as i64;
+    if (now - sent_at).abs() > WEBHOOK_TOLERANCE_SECS as i64 {
+        return deny(StatusCode::BAD_REQUEST, "timestamp expired");
+    }
+
+    // `t=1731751234,v1=<hex>`; only the v1 HMAC is checked here.
+    let Some(signature) = signature.split(',').find_map(|part| part.strip_prefix("v1=")) else {
+        return deny(StatusCode::BAD_REQUEST, "missing v1 signature");
+    };
+
+    if !verify_webhook(&gateway.key, &timestamp, &body, signature) {
+        return deny(StatusCode::UNAUTHORIZED, "invalid signature");
+    }
+
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return deny(StatusCode::BAD_REQUEST, "bad payload");
+    };
+
+    if payload.get("event").and_then(serde_json::Value::as_str) != Some("payment.settled") {
+        // Acknowledged so the gateway stops retrying an event we do not handle.
+        return Json(serde_json::json!({ "received": true })).into_response();
+    }
+
+    let qris_id = payload
+        .get("qris_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if qris_id.is_empty() {
+        return deny(StatusCode::BAD_REQUEST, "missing qris_id");
+    }
+
+    let transaction_id = payload
+        .get("transaction")
+        .and_then(|transaction| transaction.get("transaction_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    if let Ok(mut paid) = state.paid.lock() {
+        // Bounded: a long-running process should not grow this forever.
+        if paid.len() >= MAX_CACHE_ENTRIES {
+            paid.clear();
+        }
+        paid.insert(qris_id.to_string(), transaction_id.to_string());
+    }
+
+    println!("donation settled: {qris_id} ({transaction_id})");
+    Json(serde_json::json!({ "received": true })).into_response()
+}
+
+/// `HMAC_SHA256(key, "{timestamp}.{body}")` compared in constant time.
+fn verify_webhook(key: &str, timestamp: &str, body: &[u8], expected_hex: &str) -> bool {
+    use hmac::{Hmac, KeyInit, Mac};
+
+    let Ok(mut mac) = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(key.as_bytes()) else {
+        return false;
+    };
+    mac.update(timestamp.as_bytes());
+    mac.update(b".");
+    mac.update(body);
+
+    let Ok(expected) = decode_hex(expected_hex) else {
+        return false;
+    };
+
+    mac.verify_slice(&expected).is_ok()
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, ()> {
+    if !value.len().is_multiple_of(2) {
+        return Err(());
+    }
+
+    value
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).map_err(|_| ())?;
+            u8::from_str_radix(text, 16).map_err(|_| ())
+        })
+        .collect()
 }
 
 async fn genre_detail(
@@ -1406,6 +1543,7 @@ fn reject_unknown_api(path: &str) -> Option<Response> {
             || rest == "donate"
             || rest == "donate/qris"
             || rest.starts_with("donate/qris/")
+            || rest == "donate/webhook"
             || [
                 "track/",
                 "album/",
@@ -1533,12 +1671,40 @@ mod tests {
         assert!(reject_unknown_api("/v1/donate").is_none());
         assert!(reject_unknown_api("/v1/donate/qris").is_none());
         assert!(reject_unknown_api("/v1/donate/qris/123_abc").is_none());
+        assert!(reject_unknown_api("/v1/donate/webhook").is_none());
         assert!(reject_unknown_api("/v1/donate/other").is_some());
         assert!(reject_unknown_api("/v1/track/abc/credits").is_none());
         assert!(reject_unknown_api("/v1/track/abc/recommendations").is_none());
         assert!(reject_unknown_api("/v1/artist/abc/discography").is_none());
         assert!(reject_unknown_api("/v1/album/abc").is_none());
         assert!(reject_unknown_api("/detail").is_none());
+    }
+
+    #[test]
+    fn webhook_signature_must_match() {
+        use hmac::{Hmac, KeyInit, Mac};
+
+        let key = "gopay_live_test";
+        let body = br#"{"event":"payment.settled","qris_id":"1_abc"}"#;
+        let timestamp = "1731751234";
+
+        let mut mac = <Hmac<sha2::Sha256> as KeyInit>::new_from_slice(key.as_bytes()).unwrap();
+        mac.update(format!("{timestamp}.").as_bytes());
+        mac.update(body);
+        let signature: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+
+        assert!(verify_webhook(key, timestamp, body, &signature));
+        // Wrong key, tampered body, tampered timestamp, malformed hex.
+        assert!(!verify_webhook("other", timestamp, body, &signature));
+        assert!(!verify_webhook(key, timestamp, b"{}", &signature));
+        assert!(!verify_webhook(key, "1731751235", body, &signature));
+        assert!(!verify_webhook(key, timestamp, body, "nothex"));
+        assert!(!verify_webhook(key, timestamp, body, "abc"));
     }
 
     #[test]
