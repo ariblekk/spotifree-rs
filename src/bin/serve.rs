@@ -30,7 +30,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use spotifree_rs::{SearchResults, Session};
@@ -82,6 +82,17 @@ const MAX_CACHE_ENTRIES: usize = 512;
 struct Config {
     /// Empty means "accept any origin" (origin check bypassed).
     allowed_origins: Vec<String>,
+    /// QRIS payment gateway (`QRIS_BASE_URL` + `QRIS_API_KEY`). `None` hides the
+    /// donate QRIS card: without a key the gateway answers `401` anyway.
+    qris: Option<Qris>,
+}
+
+/// Server-side QRIS gateway credentials. The `gopay_live_...` key stays here —
+/// it must never reach the browser bundle.
+#[derive(Clone)]
+struct Qris {
+    base: String,
+    key: String,
 }
 
 impl Config {
@@ -97,7 +108,23 @@ impl Config {
             })
             .unwrap_or_default();
 
-        Self { allowed_origins }
+        let qris = match (
+            std::env::var("QRIS_BASE_URL"),
+            std::env::var("QRIS_API_KEY"),
+        ) {
+            (Ok(base), Ok(key)) if !base.trim().is_empty() && !key.trim().is_empty() => {
+                Some(Qris {
+                    base: base.trim().trim_end_matches('/').to_string(),
+                    key: key.trim().to_string(),
+                })
+            }
+            _ => None,
+        };
+
+        Self {
+            allowed_origins,
+            qris,
+        }
     }
 }
 
@@ -284,6 +311,22 @@ struct App {
     started_at: Instant,
 }
 
+/// Outbound client for the QRIS gateway (the Spotify session keeps its own).
+static PAYMENTS: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent("spotifree-rs")
+        .build()
+        .unwrap_or_default()
+});
+
+/// Donation presets, in rupiah. The UI offers these as buttons.
+const DONATE_AMOUNTS: [u64; 4] = [10_000, 25_000, 50_000, 100_000];
+/// Smallest and largest donation accepted, so a typo cannot create a 1-rupiah
+/// bill or a million-rupiah one.
+const DONATE_MIN: u64 = 1_000;
+const DONATE_MAX: u64 = 5_000_000;
+
 #[derive(Deserialize)]
 struct SearchParams {
     q: String,
@@ -377,6 +420,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/artist/{id}", get(artist_detail))
         .route("/v1/artist/{id}/discography", get(artist_discography))
         .route("/v1/playlist/{id}", get(playlist_detail))
+        .route("/v1/donate", get(donate_info))
+        .route("/v1/donate/qris", post(donate_qris))
+        .route("/v1/donate/qris/{id}", get(donate_status))
         .route("/healthz", get(health))
         // Pre-Vite URLs, still linked from bookmarks and notes.
         .route("/index.html", get(legacy_page))
@@ -759,6 +805,141 @@ async fn browse_categories(
         Some(body) => json_body(body),
         None => deny(StatusCode::BAD_GATEWAY, "upstream browse failed"),
     }
+}
+
+/// What the donate page needs: whether QRIS is configured and the presets.
+async fn donate_info(State(state): State<Arc<App>>) -> Response {
+    Json(serde_json::json!({
+        "qris": state.config.qris.is_some(),
+        "amounts": DONATE_AMOUNTS,
+        "min": DONATE_MIN,
+        "max": DONATE_MAX,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct DonateBody {
+    amount: Option<u64>,
+}
+
+/// Create a dynamic QRIS bill through the gateway. The API key stays on this
+/// side; the browser only ever sees the QR string and its status.
+async fn donate_qris(
+    State(state): State<Arc<App>>,
+    body: Option<Json<DonateBody>>,
+) -> Response {
+    let Some(gateway) = state.config.qris.as_ref() else {
+        return deny(StatusCode::SERVICE_UNAVAILABLE, "QRIS is not configured");
+    };
+
+    let amount = body.and_then(|Json(body)| body.amount).unwrap_or(0);
+    if !(DONATE_MIN..=DONATE_MAX).contains(&amount) {
+        return deny(
+            StatusCode::BAD_REQUEST,
+            "amount must be between 1000 and 5000000",
+        );
+    }
+
+    let payload = serde_json::json!({
+        "amount": amount,
+        "unique": true,
+        "trx_id": format!("DONATE-{}", now_millis()),
+    });
+
+    let answer = PAYMENTS
+        .post(format!("{}/create-qris", gateway.base))
+        .header("x-api-key", &gateway.key)
+        .json(&payload)
+        .send()
+        .await;
+
+    let Ok(answer) = answer else {
+        return deny(StatusCode::BAD_GATEWAY, "payment gateway unreachable");
+    };
+
+    if !answer.status().is_success() {
+        let status = answer.status();
+        eprintln!("create-qris failed: {status}");
+        return deny(StatusCode::BAD_GATEWAY, "payment gateway rejected the bill");
+    }
+
+    match answer.json::<serde_json::Value>().await {
+        Ok(data) if data.get("success").and_then(serde_json::Value::as_bool) == Some(false) => {
+            deny(StatusCode::BAD_GATEWAY, "payment gateway rejected the bill")
+        }
+        Ok(data) => {
+            let qr = data.get("data").cloned().unwrap_or(serde_json::Value::Null);
+            let pick = |field: &str| qr.get(field).cloned().unwrap_or(serde_json::Value::Null);
+
+            Json(serde_json::json!({
+                "qris_id": pick("qris_id"),
+                "trx_id": pick("trx_id"),
+                "amount": pick("amount"),
+                "base_amount": pick("base_amount"),
+                "unique_code": pick("unique_code"),
+                // EMVCo payload: rendered into a QR by the browser.
+                "qris_code": pick("qris_code"),
+                "expires_at": pick("expires_at"),
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            eprintln!("create-qris answer was not JSON: {error}");
+            deny(StatusCode::BAD_GATEWAY, "payment gateway sent an odd answer")
+        }
+    }
+}
+
+/// Poll one bill. Public on the gateway side, so no key is needed here.
+async fn donate_status(
+    State(state): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(gateway) = state.config.qris.as_ref() else {
+        return deny(StatusCode::SERVICE_UNAVAILABLE, "QRIS is not configured");
+    };
+
+    // Gateway ids look like `1731751234567_abc123`.
+    if id.is_empty() || id.len() > MAX_ID_LEN || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return deny(StatusCode::BAD_REQUEST, "invalid payment id");
+    }
+
+    let answer = PAYMENTS
+        .get(format!("{}/api/qr-status/{id}", gateway.base))
+        .send()
+        .await;
+
+    let Ok(answer) = answer else {
+        return deny(StatusCode::BAD_GATEWAY, "payment gateway unreachable");
+    };
+
+    if !answer.status().is_success() {
+        return deny(StatusCode::BAD_GATEWAY, "payment gateway rejected the check");
+    }
+
+    match answer.json::<serde_json::Value>().await {
+        Ok(data) => {
+            let status = data.get("status").cloned().unwrap_or(serde_json::Value::Null);
+            Json(serde_json::json!({
+                "paid": data.get("paid").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                "status": status,
+            }))
+            .into_response()
+        }
+        Err(error) => {
+            eprintln!("qr-status answer was not JSON: {error}");
+            deny(StatusCode::BAD_GATEWAY, "payment gateway sent an odd answer")
+        }
+    }
+}
+
+/// Milliseconds since the epoch, used only to tag donation invoices.
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default()
 }
 
 async fn genre_detail(
@@ -1158,6 +1339,9 @@ fn cache_control(path: &str) -> &'static str {
         "public, max-age=31536000, immutable"
     } else if path == "/healthz" {
         "no-store"
+    } else if path == "/v1/donate" || path.starts_with("/v1/donate/") {
+        // Payment answers are per-visitor and short-lived: never cache them.
+        "no-store"
     } else if path == "/v1/search" || path == "/v1/search/suggest" {
         "public, max-age=30, stale-while-revalidate=60"
     } else if path.starts_with("/v1/charts")
@@ -1209,8 +1393,7 @@ async fn add_security_headers(request: Request, next: Next) -> Response {
             "default-src 'self'; img-src 'self' https: data:; \
              style-src 'self'; font-src 'self'; \
              script-src 'self'; \
-             connect-src 'self' https://lrc.red https://lrclib.net; base-uri 'none'; form-action 'self'",
-        ),
+             connect-src 'self' https://lrc.red https://lrclib.net; base-uri 'none'; form-action 'self'",        ),
     );
     response
 }
@@ -1222,6 +1405,9 @@ fn reject_unknown_api(path: &str) -> Option<Response> {
             || rest == "search/suggest"
             || rest == "charts"
             || rest == "browse"
+            || rest == "donate"
+            || rest == "donate/qris"
+            || rest.starts_with("donate/qris/")
             || [
                 "track/",
                 "album/",
@@ -1346,6 +1532,10 @@ mod tests {
         assert!(reject_unknown_api("/v1/search/suggest").is_none());
         assert!(reject_unknown_api("/v1/browse").is_none());
         assert!(reject_unknown_api("/v1/genre/abc").is_none());
+        assert!(reject_unknown_api("/v1/donate").is_none());
+        assert!(reject_unknown_api("/v1/donate/qris").is_none());
+        assert!(reject_unknown_api("/v1/donate/qris/123_abc").is_none());
+        assert!(reject_unknown_api("/v1/donate/other").is_some());
         assert!(reject_unknown_api("/v1/track/abc/credits").is_none());
         assert!(reject_unknown_api("/v1/track/abc/recommendations").is_none());
         assert!(reject_unknown_api("/v1/artist/abc/discography").is_none());
@@ -1465,6 +1655,9 @@ mod tests {
         assert!(cache_control("/favicon.svg").contains("immutable"));
         assert_eq!(cache_control("/healthz"), "no-store");
         assert_eq!(cache_control("/v1/typo"), "no-store");
+        assert_eq!(cache_control("/v1/donate"), "no-store");
+        assert_eq!(cache_control("/v1/donate/qris"), "no-store");
+        assert_eq!(cache_control("/v1/donate/qris/123_abc"), "no-store");
         assert_eq!(cache_control("/api/typo"), "no-store");
         assert_eq!(cache_control("/"), "no-cache");
         assert!(cache_control("/v1/search").starts_with("public, max-age=30"));

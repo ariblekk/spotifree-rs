@@ -39,6 +39,10 @@ Versions use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - `GET /v1/browse`: curated browse categories.
   - `GET /v1/genre/{id}`: genre pages with subgenres, playlists, and releases.
 - Client-side lyrics retrieval via `lrc.red` with fallback to `lrclib.net`.
+- Donate page: dynamic QRIS through a payment gateway (`qris.blek.my.id`), with
+  `POST /v1/donate/qris`, `GET /v1/donate/qris/{id}` polling and a `GET /v1/donate`
+  capability probe. The gateway key stays on the server (`QRIS_BASE_URL` /
+  `QRIS_API_KEY`); the card hides when it is unset. Saweria stays as a fallback.
 - "Play on YouTube" direct action on track details.
 - Search suggestion chips on the search page.
 - `GET /v1/charts/{id|global}` (and `/v1/charts`): ranked chart plus trending

@@ -99,6 +99,9 @@ all-in-one image and the Vite dev proxy both need.
 | `GET /v1/browse` | browse / explore categories list (`id`, `title`, `color`, `image_url`) |
 | `GET /v1/genre/{id}` | curated genre page with sections (`playlists`, `releases`, subgenres) |
 | `GET /v1/charts/{id\|global}?top=<daily\|alltime>` | 50 ranked rows + `trending` / `popular_albums` / `popular_artists` |
+| `GET /v1/donate` | `{ qris, amounts, min, max }` — whether QRIS is configured, plus presets |
+| `POST /v1/donate/qris` `{"amount":25000}` | dynamic QRIS bill: `qris_id`, `amount`, `qris_code`, `expires_at` |
+| `GET /v1/donate/qris/{id}` | `{ paid, status }` for polling a bill |
 | `GET /healthz` | `warm`, `hashes`, `token_valid`, `uptime_secs`, `cache_bytes`, cache counters; `503` until warm |
 | `GET /`, `/docs`, `/charts`, `/donate`, `/detail?...` | SPA pages |
 
@@ -119,6 +122,8 @@ on a private network.
 | `ALLOWED_ORIGIN` | unset = any | Comma-separated UI origins allowed to call the API cross-site (also enables CORS + preflight) |
 | `BIND` | `0.0.0.0` | Listen address; use `127.0.0.1` for local-only |
 | `FRONTEND_DIR` | `web/dist` | Directory holding the built frontend (unused when it is not present) |
+| `QRIS_BASE_URL` | unset | Payment gateway base URL, e.g. `https://qris.blek.my.id`. Enables the QRIS card on `/donate` |
+| `QRIS_API_KEY` | unset | Gateway application key (`gopay_live_...`). Server-side only — it never reaches the browser |
 
 Every response gets `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy:
 no-referrer` and a restrictive CSP; upstream error bodies are never returned.

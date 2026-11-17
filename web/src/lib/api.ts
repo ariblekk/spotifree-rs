@@ -204,6 +204,58 @@ export function genre(id: string, signal?: AbortSignal) {
   return getJson<GenrePage>(`/v1/genre/${encodeURIComponent(id)}`, signal);
 }
 
+export interface DonateInfo {
+  qris: boolean;
+  amounts: number[];
+  min: number;
+  max: number;
+}
+
+export interface DonateBill {
+  qris_id: string;
+  trx_id: string;
+  amount: number;
+  base_amount: number;
+  unique_code: number;
+  qris_code: string;
+  expires_at: string;
+}
+
+/// Whether the server has QRIS credentials and which presets it offers.
+export function donateInfo(signal?: AbortSignal) {
+  return getJson<DonateInfo>("/v1/donate", signal);
+}
+
+/// Create a QRIS bill. The API key stays on the server; only the EMVCo string
+/// comes back, ready to be drawn as a QR.
+export async function donateQris(
+  amount: number,
+  signal?: AbortSignal,
+): Promise<DonateBill> {
+  const response = await fetch(apiUrl("/v1/donate/qris"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ amount }),
+    signal,
+  });
+
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = (body as { error?: string } | null)?.error;
+    throw new Error(message || `HTTP ${response.status}`);
+  }
+
+  return body as DonateBill;
+}
+
+/// Poll a bill until it is paid, expires, or `signal` aborts.
+export function donateStatus(id: string, signal?: AbortSignal) {
+  return getJson<{ paid: boolean; status: string | null }>(
+    `/v1/donate/qris/${encodeURIComponent(id)}`,
+    signal,
+  );
+}
+
 export interface LyricsHints {
   title: string;
   artist: string;
