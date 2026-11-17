@@ -85,7 +85,6 @@ export default function DonatePage() {
 
   const amounts = info?.amounts?.length ? info.amounts : FALLBACK_AMOUNTS;
   const qrisReady = info?.qris !== false;
-  const min = info?.min ?? 1_000;
   const max = info?.max ?? 5_000_000;
 
   return (
@@ -130,9 +129,9 @@ export default function DonatePage() {
                 <input
                   type="number"
                   inputMode="numeric"
-                  min={min}
+                  min={1}
                   max={max}
-                  step={1000}
+                  step={1}
                   value={amount}
                   onChange={(event) => setAmount(Number(event.target.value))}
                   className="h-9 border border-border bg-background px-2.5 text-[15px] text-foreground outline-none focus-visible:border-ring"

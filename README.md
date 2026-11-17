@@ -99,7 +99,7 @@ all-in-one image and the Vite dev proxy both need.
 | `GET /v1/browse` | browse / explore categories list (`id`, `title`, `color`, `image_url`) |
 | `GET /v1/genre/{id}` | curated genre page with sections (`playlists`, `releases`, subgenres) |
 | `GET /v1/charts/{id\|global}?top=<daily\|alltime>` | 50 ranked rows + `trending` / `popular_albums` / `popular_artists` |
-| `GET /v1/donate` | `{ qris, amounts, min, max }` — whether QRIS is configured, plus presets |
+| `GET /v1/donate` | `{ qris, amounts, max }` — whether QRIS is configured, plus presets |
 | `POST /v1/donate/qris` `{"amount":25000}` | dynamic QRIS bill: `qris_id`, `amount`, `qris_code`, `expires_at` |
 | `GET /v1/donate/qris/{id}` | `{ paid, status }` for polling a bill |
 | `GET /healthz` | `warm`, `hashes`, `token_valid`, `uptime_secs`, `cache_bytes`, cache counters; `503` until warm |

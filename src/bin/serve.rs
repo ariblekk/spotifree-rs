@@ -322,9 +322,8 @@ static PAYMENTS: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new
 
 /// Donation presets, in rupiah. The UI offers these as buttons.
 const DONATE_AMOUNTS: [u64; 4] = [10_000, 25_000, 50_000, 100_000];
-/// Smallest and largest donation accepted, so a typo cannot create a 1-rupiah
-/// bill or a million-rupiah one.
-const DONATE_MIN: u64 = 1_000;
+/// Only a sanity ceiling: the gateway rejects `amount <= 0` on its own, so no
+/// minimum is imposed here.
 const DONATE_MAX: u64 = 5_000_000;
 
 #[derive(Deserialize)]
@@ -812,7 +811,6 @@ async fn donate_info(State(state): State<Arc<App>>) -> Response {
     Json(serde_json::json!({
         "qris": state.config.qris.is_some(),
         "amounts": DONATE_AMOUNTS,
-        "min": DONATE_MIN,
         "max": DONATE_MAX,
     }))
     .into_response()
@@ -834,10 +832,10 @@ async fn donate_qris(
     };
 
     let amount = body.and_then(|Json(body)| body.amount).unwrap_or(0);
-    if !(DONATE_MIN..=DONATE_MAX).contains(&amount) {
+    if amount == 0 || amount > DONATE_MAX {
         return deny(
             StatusCode::BAD_REQUEST,
-            "amount must be between 1000 and 5000000",
+            "amount must be between 1 and 5000000",
         );
     }
 

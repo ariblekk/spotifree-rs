@@ -207,7 +207,6 @@ export function genre(id: string, signal?: AbortSignal) {
 export interface DonateInfo {
   qris: boolean;
   amounts: number[];
-  min: number;
   max: number;
 }
 

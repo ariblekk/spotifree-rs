@@ -7,6 +7,8 @@ services:
     environment:
       PORT: 8080
       BIND: 0.0.0.0
+      QRIS_BASE_URL: https://qris.blek.my.id
+      QRIS_API_KEY: gopay_live_YTWixqDS6WcJiN70JT2pmSuYcEVvi3Uq
       # Empty = any origin (check bypassed). Put a comma-separated list in a
       # `.env` file next to this one to restrict cross-site callers, e.g.
       #   ALLOWED_ORIGIN=http://localhost:5173,http://192.168.1.20:5173
