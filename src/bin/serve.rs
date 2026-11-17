@@ -1015,7 +1015,7 @@ async fn donate_webhook(
 
     if payload.get("event").and_then(serde_json::Value::as_str) != Some("payment.settled") {
         // Acknowledged so the gateway stops retrying an event we do not handle.
-        return Json(serde_json::json!({ "received": true })).into_response();
+        return Json(serde_json::json!({ "ok": true, "received": true })).into_response();
     }
 
     let qris_id = payload
@@ -1041,7 +1041,12 @@ async fn donate_webhook(
     }
 
     println!("donation settled: {qris_id} ({transaction_id})");
-    Json(serde_json::json!({ "received": true })).into_response()
+    Json(serde_json::json!({
+        "ok": true,
+        "received": true,
+        "qris_id": qris_id,
+    }))
+    .into_response()
 }
 
 /// `HMAC_SHA256(key, "{timestamp}.{body}")` compared in constant time.
