@@ -12,6 +12,9 @@ import {
 } from "@/lib/api";
 
 const SAWERIA = "https://saweria.co/ariharyanto";
+/// Plays once the bill settles. `youtube-nocookie` keeps the tracker out until
+/// the video is actually played.
+const THANKS_VIDEO = "https://www.youtube-nocookie.com/embed/2DFKIllyMOY?rel=0";
 const FALLBACK_AMOUNTS = [10_000, 25_000, 50_000, 100_000];
 const POLL_MS = 3000;
 
@@ -235,14 +238,26 @@ function QrisDialog({
         onClick={(event) => event.stopPropagation()}
       >
         {paid ? (
-          <div className="flex flex-col items-center gap-2 py-6 text-center">
+          <div className="flex flex-col items-center gap-3 text-center">
             <span className="text-[24px] font-bold tracking-[-0.01em]">
               Terima kasih!
             </span>
             <span className="text-[15px] text-muted-foreground">
               Pembayaran {rupiah(bill.amount)} sudah diterima.
             </span>
-            <Button className="mt-3 px-6 font-semibold" onClick={onClose}>
+
+            <div className="mt-1 aspect-video w-full border border-border bg-black">
+              <iframe
+                src={THANKS_VIDEO}
+                title="Terima kasih"
+                allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+                allowFullScreen
+                referrerPolicy="strict-origin-when-cross-origin"
+                className="h-full w-full"
+              />
+            </div>
+
+            <Button className="px-6 font-semibold" onClick={onClose}>
               Tutup
             </Button>
           </div>

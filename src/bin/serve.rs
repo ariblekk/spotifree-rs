@@ -1521,7 +1521,10 @@ async fn add_security_headers(request: Request, next: Next) -> Response {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
     headers.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -1533,7 +1536,9 @@ async fn add_security_headers(request: Request, next: Next) -> Response {
             "default-src 'self'; img-src 'self' https: data:; \
              style-src 'self'; font-src 'self'; \
              script-src 'self'; \
-             connect-src 'self' https://lrc.red https://lrclib.net; base-uri 'none'; form-action 'self'",        ),
+             frame-src https://www.youtube-nocookie.com; \
+             connect-src 'self' https://lrc.red https://lrclib.net; base-uri 'none'; form-action 'self'",
+        ),
     );
     response
 }
