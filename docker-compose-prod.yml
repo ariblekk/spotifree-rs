@@ -12,7 +12,7 @@
 
 services:
   app:
-    image: ariblekk/spotifree-rs:1.0.0
+    image: ariblekk/spotifree-rs:latest
     pull_policy: always
     restart: always
     # SIGTERM starts a graceful shutdown; give in-flight requests time to finish.

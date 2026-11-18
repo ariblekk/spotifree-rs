@@ -83,6 +83,19 @@ export default function DonatePage() {
     }
   }, [amount]);
 
+  const close = useCallback(() => setState({ kind: "idle" }), []);
+
+  // Esc closes the dialog, like any other overlay.
+  useEffect(() => {
+    if (state.kind !== "bill") return;
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [state.kind, close]);
+
   const amounts = info?.amounts?.length ? info.amounts : FALLBACK_AMOUNTS;
   const qrisReady = info?.qris !== false;
   const max = info?.max ?? 5_000_000;
@@ -153,39 +166,6 @@ export default function DonatePage() {
                 </p>
               )}
             </div>
-
-            {state.kind === "bill" && (
-              <div className="flex flex-col items-center gap-3 border-t border-border px-6 py-7 max-sm:px-4.5">
-                {state.paid ? (
-                  <div className="flex flex-col items-center gap-2 text-center">
-                    <span className="text-[22px] font-bold tracking-[-0.01em]">
-                      Terima kasih!
-                    </span>
-                    <span className="text-[15px] text-muted-foreground">
-                      Pembayaran {rupiah(state.bill.amount)} sudah diterima.
-                    </span>
-                  </div>
-                ) : (
-                  <>
-                    <div className="bg-white p-3">
-                      <QRCodeSVG
-                        value={state.bill.qris_code}
-                        size={220}
-                        marginSize={0}
-                        bgColor="#ffffff"
-                        fgColor="#000000"
-                      />
-                    </div>
-                    <span className="text-[17px] font-semibold">
-                      {rupiah(state.bill.amount)}
-                    </span>
-                    <span className="text-[13px] text-muted-foreground">
-                      Trx {state.bill.trx_id} · menunggu pembayaran
-                    </span>
-                  </>
-                )}
-              </div>
-            )}
           </section>
         )}
 
@@ -220,6 +200,104 @@ export default function DonatePage() {
           unauthenticated either way. Nothing here is affiliated with Spotify.
         </AlertDescription>
       </Alert>
+
+      {state.kind === "bill" && (
+        <QrisDialog bill={state.bill} paid={state.paid} onClose={close} />
+      )}
     </main>
+  );
+}
+
+/// Scannable bill in an overlay, so the page keeps its layout and the payer has
+/// one thing on screen. The barcode line explains the odd total (base + unique
+/// code) instead of letting it look like a bug.
+function QrisDialog({
+  bill,
+  paid,
+  onClose,
+}: {
+  bill: DonateBill;
+  paid: boolean;
+  onClose: () => void;
+}) {
+  const unique = bill.amount - bill.base_amount;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Pembayaran QRIS"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-[420px] border border-border bg-card p-6"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {paid ? (
+          <div className="flex flex-col items-center gap-2 py-6 text-center">
+            <span className="text-[24px] font-bold tracking-[-0.01em]">
+              Terima kasih!
+            </span>
+            <span className="text-[15px] text-muted-foreground">
+              Pembayaran {rupiah(bill.amount)} sudah diterima.
+            </span>
+            <Button className="mt-3 px-6 font-semibold" onClick={onClose}>
+              Tutup
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3">
+            <h2 className="text-[20px] leading-tight font-bold tracking-[-0.01em]">
+              Scan untuk bayar
+            </h2>
+            <p className="m-0 text-[14px] text-muted-foreground">
+              Buka m-banking atau e-wallet, lalu pindai kode di bawah.
+            </p>
+
+            <div className="mt-1 bg-white p-3">
+              <QRCodeSVG
+                value={bill.qris_code}
+                size={228}
+                marginSize={0}
+                bgColor="#ffffff"
+                fgColor="#000000"
+              />
+            </div>
+
+            <div className="w-full pt-1 text-center">
+              <span className="block text-[13px] text-muted-foreground">
+                Total yang harus dibayar
+              </span>
+              <span className="block text-[26px] font-bold tracking-[-0.01em]">
+                {rupiah(bill.amount)}
+              </span>
+            </div>
+
+            {unique > 0 && (
+              <p className="m-0 w-full border border-border bg-muted/40 px-3 py-2 text-left text-[13px] leading-relaxed text-muted-foreground">
+                Nominalnya sengaja berbeda {rupiah(unique)} dari{" "}
+                {rupiah(bill.base_amount)}. Itu <strong>kode unik</strong> yang
+                dipakai sistem untuk mencocokkan pembayaranmu secara otomatis —
+                bukan biaya tambahan, dan ikut terbayar sebagai donasi. Bayar
+                sesuai nominal di atas, jangan dibulatkan.
+              </p>
+            )}
+
+            <span className="text-[12px] text-muted-foreground">
+              {bill.trx_id} · menunggu pembayaran
+            </span>
+
+            <Button
+              variant="outline"
+              className="mt-1 w-full px-6 font-semibold"
+              onClick={onClose}
+            >
+              Batal
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

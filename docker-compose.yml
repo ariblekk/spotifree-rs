@@ -1,7 +1,7 @@
 services:
   docs:
     build: .
-    image: spotifree-rs:latest
+    image: ariblekk/spotifree-rs:latest
     ports:
       - "8080:8080"
     environment:
