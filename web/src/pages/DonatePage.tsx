@@ -16,7 +16,7 @@ const SAWERIA = "https://saweria.co/ariharyanto";
 /// audible autoplay without a fresh gesture. `playsinline` keeps iOS from taking
 /// over the screen.
 const THANKS_VIDEO =
-  "https://www.youtube-nocookie.com/embed/2DFKIllyMOY?rel=0&autoplay=1&mute=1&playsinline=1";
+  "https://www.youtube-nocookie.com/embed/j2Hs12PsiPI?rel=0&autoplay=1&mute=1&playsinline=1";
 const FALLBACK_AMOUNTS = [10_000, 25_000, 50_000, 100_000];
 const POLL_MS = 3000;
 
