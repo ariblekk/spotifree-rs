@@ -12,11 +12,11 @@ import {
 } from "@/lib/api";
 
 const SAWERIA = "https://saweria.co/ariharyanto";
-/// Plays once the bill settles. Auto-start only ever works muted: browsers block
-/// audible autoplay without a fresh gesture. `playsinline` keeps iOS from taking
-/// over the screen.
+/// Plays once the bill settles. Audible autoplay only passes in browsers that
+/// count the donor's earlier click as a gesture (Chrome); Safari and Firefox
+/// fall back to a play button. `playsinline` keeps iOS from going fullscreen.
 const THANKS_VIDEO =
-  "https://www.youtube-nocookie.com/embed/j2Hs12PsiPI?rel=0&autoplay=1&mute=1&playsinline=1";
+  "https://www.youtube-nocookie.com/embed/j2Hs12PsiPI?rel=0&autoplay=1&playsinline=1";
 const FALLBACK_AMOUNTS = [10_000, 25_000, 50_000, 100_000];
 const POLL_MS = 3000;
 
