@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
 import Confetti from "@/components/Confetti";
+import ElectricBorder from "@/components/ElectricBorder";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -240,38 +241,54 @@ function QrisDialog({
         <Confetti />
 
         <div
-          className="animate-celebrate flex w-full max-w-[680px] flex-col items-center gap-4 py-6 text-center"
+          className="animate-celebrate w-full max-w-[680px]"
           onClick={(event) => event.stopPropagation()}
         >
-          <span className="text-[12px] font-semibold tracking-[0.35em] text-primary uppercase">
-            Donasi diterima
-          </span>
+          <ElectricBorder
+            color="#ccf05b"
+            glowColor="#ccf05b"
+            speed={1}
+            chaos={0.5}
+            spread={0.6}
+            strands={3}
+            thickness={1.5}
+            borderRadius={24}
+            className="w-full"
+          >
+            <div className="flex flex-col items-center gap-4 rounded-[24px] bg-background/85 px-6 py-8 text-center">
+              <span className="text-[12px] font-semibold tracking-[0.35em] text-primary uppercase">
+                Donasi diterima
+              </span>
 
-          <h2 className="text-[clamp(2rem,8vw,4rem)] leading-[0.95] font-bold tracking-[-0.04em] text-primary drop-shadow-[0_0_28px_rgba(204,240,91,0.35)]">
-            TERIMA KASIH!
-          </h2>
+              <h2 className="text-[clamp(2rem,8vw,4rem)] leading-[0.95] font-bold tracking-[-0.04em] text-primary drop-shadow-[0_0_28px_rgba(204,240,91,0.35)]">
+                TERIMA KASIH!
+              </h2>
 
-          <p className="m-0 max-w-[52ch] text-[15px] text-foreground/80">
-            {rupiah(bill.amount)} sudah masuk. Server tetap hidup dan bebas iklan
-            karena kamu.
-          </p>
+              <p className="m-0 max-w-[52ch] text-[15px] text-foreground/80">
+                {rupiah(bill.amount)} sudah masuk. Server tetap hidup dan bebas
+                iklan karena kamu.
+              </p>
 
-          <div className="mt-1 aspect-video w-full max-w-[640px] border border-primary/40 bg-black shadow-[0_0_80px_-20px_var(--primary)]">
-            <iframe
-              src={THANKS_VIDEO}
-              title="Terima kasih"
-              allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-              allowFullScreen
-              referrerPolicy="strict-origin-when-cross-origin"
-              className="h-full w-full"
-            />
-          </div>
+              <div className="mt-1 aspect-video w-full max-w-[640px] border border-primary/40 bg-black shadow-[0_0_80px_-20px_var(--primary)]">
+                <iframe
+                  src={THANKS_VIDEO}
+                  title="Terima kasih"
+                  allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+                  allowFullScreen
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  className="h-full w-full"
+                />
+              </div>
 
-          <span className="text-[12px] text-muted-foreground">{bill.trx_id}</span>
+              <span className="text-[12px] text-muted-foreground">
+                {bill.trx_id}
+              </span>
 
-          <Button className="px-8 font-semibold" onClick={onClose}>
-            Tutup
-          </Button>
+              <Button className="px-8 font-semibold" onClick={onClose}>
+                Tutup
+              </Button>
+            </div>
+          </ElectricBorder>
         </div>
       </div>
     );
