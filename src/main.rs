@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use serde_json::Value;
-use spotifree_rs::{SearchResults, Session};
+use spotifree_rs::{SearchResults, Session, UserAuth};
 
 #[derive(Parser)]
 #[command(
@@ -51,6 +51,32 @@ enum Command {
         #[arg(long, default_value = "en")]
         language: String,
     },
+
+    /// Inspect the authenticated user's profile, playlists, liked tracks, or top items
+    Me {
+        /// Resource: profile, playlists, tracks, or top
+        #[arg(default_value = "profile")]
+        resource: String,
+
+        /// Spotify bearer access token (BQ...) or sp_dc cookie (falls back to SP_DC / SPOTIFY_ACCESS_TOKEN env)
+        #[arg(long)]
+        auth: Option<String>,
+
+        /// Results limit (1-50)
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+
+        /// Pagination offset
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Time range for `top`: short, medium, or long
+        #[arg(long, default_value = "medium")]
+        range: String,
+
+        #[arg(long, default_value = "en")]
+        language: String,
+    },
 }
 
 #[tokio::main]
@@ -97,6 +123,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("client id:    {}", token.client_id);
             println!("anonymous:    {}", token.is_anonymous);
             println!("expires in:   {}s", token.expires_in_ms() / 1000);
+        }
+
+        Command::Me {
+            resource,
+            auth,
+            limit,
+            offset,
+            range,
+            language,
+        } => {
+            let raw_auth = auth
+                .or_else(|| std::env::var("SP_DC").ok())
+                .or_else(|| std::env::var("SPOTIFY_SP_DC").ok())
+                .or_else(|| std::env::var("SPOTIFY_ACCESS_TOKEN").ok())
+                .ok_or("missing credentials; pass --auth <token|sp_dc> or set SP_DC")?;
+            let user_auth = UserAuth::parse(&raw_auth)?;
+            let session = Session::with_language(&language).await?;
+
+            match resource.trim().to_ascii_lowercase().as_str() {
+                "profile" | "me" => {
+                    let profile = session.me(&user_auth).await?;
+                    println!("{}", serde_json::to_string_pretty(&profile)?);
+                }
+                "playlists" | "playlist" => {
+                    let playlists = session.me_playlists(&user_auth, limit, offset).await?;
+                    println!("{}", serde_json::to_string_pretty(&playlists)?);
+                }
+                "tracks" | "track" | "liked" => {
+                    let tracks = session.me_tracks(&user_auth, limit, offset).await?;
+                    println!("{}", serde_json::to_string_pretty(&tracks)?);
+                }
+                "top" => {
+                    let top = session
+                        .me_top(&user_auth, Some(&range), limit, offset, true, true)
+                        .await?;
+                    println!("{}", serde_json::to_string_pretty(&top)?);
+                }
+                "top-tracks" | "top_tracks" => {
+                    let top = session
+                        .me_top(&user_auth, Some(&range), limit, offset, true, false)
+                        .await?;
+                    println!("{}", serde_json::to_string_pretty(&top)?);
+                }
+                "top-artists" | "top_artists" => {
+                    let top = session
+                        .me_top(&user_auth, Some(&range), limit, offset, false, true)
+                        .await?;
+                    println!("{}", serde_json::to_string_pretty(&top)?);
+                }
+                other => {
+                    return Err(
+                        format!("unknown me resource {other:?}; use profile, playlists, tracks, or top")
+                            .into(),
+                    );
+                }
+            }
         }
     }
 

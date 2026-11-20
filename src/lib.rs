@@ -7,6 +7,7 @@ pub use error::{Error, Result};
 pub use lyrics::{Lyrics, Provider, TrackExtras, TrackHints};
 pub use models::{
     Album, Artist, BrowseCategory, Chart, ChartEntry, Charts, GenreItem, GenrePage, GenreSection,
-    Playlist, SearchResults, Track, market_of, relabel,
+    Playlist, SavedTrack, SearchResults, Track, UserPlaylists, UserProfile, UserTop, UserTracks,
+    market_of, relabel,
 };
-pub use session::{AccessToken, GLOBAL_HUB, Session};
+pub use session::{AccessToken, GLOBAL_HUB, Session, UserAuth};

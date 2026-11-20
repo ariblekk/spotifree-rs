@@ -38,6 +38,11 @@ Versions use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - `GET /v1/artist/{id}/discography`: artist discography filtered by release type.
   - `GET /v1/browse`: curated browse categories.
   - `GET /v1/genre/{id}`: genre pages with subgenres, playlists, and releases.
+  - `GET /v1/me`, `GET /v1/me/playlists`, `GET /v1/me/tracks`, and
+    `GET /v1/me/top` (plus `/v1/me/top/tracks`, `/v1/me/top/artists` and CLI
+    `spotifree me`): authenticated user profile, saved playlists, Liked Songs, and
+    top tracks/artists via a caller-supplied `sp_dc` cookie or Spotify bearer
+    `access_token` (`Cache-Control: private, no-store`).
 - Client-side lyrics retrieval via `lrc.red` with fallback to `lrclib.net`.
 - Donate page: dynamic QRIS through a payment gateway (`qris.blek.my.id`), with
   `POST /v1/donate/qris`, `GET /v1/donate/qris/{id}` polling and a `GET /v1/donate`

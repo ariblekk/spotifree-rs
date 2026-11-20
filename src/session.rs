@@ -17,8 +17,10 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::models::{
-    BrowseCategory, Charts, GenrePage, SearchResults, market_of, parse_browse_categories,
-    parse_chart_entries, parse_charts, parse_genre_page, parse_search, relabel,
+    BrowseCategory, Charts, GenrePage, SearchResults, UserPlaylists, UserProfile, UserTop,
+    UserTracks, market_of, parse_browse_categories, parse_chart_entries, parse_charts,
+    parse_genre_page, parse_search, parse_user_playlists, parse_user_profile, parse_user_top,
+    parse_user_tracks, relabel,
 };
 use crate::protocol::bundles::{
     AppServerConfig, chunk_urls, extract_js_links, extract_query_hashes, extract_script_base64,
@@ -58,7 +60,102 @@ const OPERATION_CHUNKS: &[&str] = &[
     "xpui-routes-playlist",
     "xpui-routes-track",
     "xpui-routes-country-hub",
+    "xpui-routes-profile",
+    "xpui-routes-collection",
 ];
+
+const MAX_USER_TOKEN_CACHE: usize = 128;
+
+/// User-supplied credentials for `/me` operations.
+///
+/// A client can pass either a ready-made Spotify bearer `access_token` (`BQ…`)
+/// or an `sp_dc` browser cookie, which the session exchanges for a user access
+/// token through Spotify's TOTP token endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserAuth {
+    AccessToken(String),
+    SpDc(String),
+}
+
+impl UserAuth {
+    /// Parse a raw credential string (`Bearer <token>`, `sp_dc=<cookie>`, full
+    /// cookie header, raw `BQ…` access token, or raw `sp_dc` value).
+    pub fn parse(raw: &str) -> Result<Self> {
+        let trimmed = raw.trim();
+        if trimmed.eq_ignore_ascii_case("bearer") {
+            return Err(Error::Protocol(
+                "missing Spotify token or sp_dc cookie".into(),
+            ));
+        }
+
+        let stripped = trimmed
+            .strip_prefix("Bearer ")
+            .or_else(|| trimmed.strip_prefix("bearer "))
+            .map(str::trim)
+            .unwrap_or(trimmed);
+
+        if stripped.is_empty() {
+            return Err(Error::Protocol(
+                "missing Spotify token or sp_dc cookie".into(),
+            ));
+        }
+
+        if let Some(sp_dc) = extract_sp_dc_pair(stripped) {
+            return Self::from_sp_dc(sp_dc);
+        }
+
+        // Spotify access tokens (Web Player and Web API OAuth) start with `BQ`.
+        if stripped.starts_with("BQ") && stripped.len() >= 40 {
+            Self::from_access_token(stripped)
+        } else {
+            Self::from_sp_dc(stripped)
+        }
+    }
+
+    /// Parse an explicit cookie header or raw `sp_dc` value.
+    pub fn from_cookie(raw: &str) -> Result<Self> {
+        let trimmed = raw.trim();
+        if let Some(sp_dc) = extract_sp_dc_pair(trimmed) {
+            return Self::from_sp_dc(sp_dc);
+        }
+        Self::from_sp_dc(trimmed)
+    }
+
+    /// Construct a validated bearer `access_token`.
+    pub fn from_access_token(token: &str) -> Result<Self> {
+        let token = token.trim();
+        if token.is_empty()
+            || token.len() > 2048
+            || !token
+                .chars()
+                .all(|c| c.is_ascii_graphic() && c != ';' && c != '"')
+        {
+            return Err(Error::Protocol("invalid Spotify access token".into()));
+        }
+        Ok(Self::AccessToken(token.to_string()))
+    }
+
+    /// Construct a validated `sp_dc` cookie value.
+    pub fn from_sp_dc(sp_dc: &str) -> Result<Self> {
+        let sp_dc = sp_dc.trim().trim_matches('"');
+        if sp_dc.is_empty()
+            || sp_dc.len() > 1024
+            || !sp_dc
+                .chars()
+                .all(|c| c.is_ascii_graphic() && c != ';' && c != '"')
+        {
+            return Err(Error::Protocol("invalid sp_dc cookie".into()));
+        }
+        Ok(Self::SpDc(sp_dc.to_string()))
+    }
+}
+
+fn extract_sp_dc_pair(raw: &str) -> Option<&str> {
+    raw.split(';')
+        .find_map(|part| part.trim().strip_prefix("sp_dc="))
+        .map(|val| val.trim().trim_matches('"'))
+        .filter(|val| !val.is_empty())
+}
 
 #[derive(Debug, Clone)]
 pub struct AccessToken {
@@ -90,9 +187,15 @@ struct Discovery {
 
 pub struct Session {
     http: reqwest::Client,
+    /// Cookie-less client used for user-scoped (`/me`) requests so a caller's
+    /// `sp_dc` cookie never leaks into the shared anonymous cookie jar.
+    user_http: reqwest::Client,
     language: String,
     discovery: tokio::sync::RwLock<Option<Discovery>>,
     token: tokio::sync::Mutex<Option<AccessToken>>,
+    /// Short-lived cache of `SHA-256(sp_dc)` -> user `AccessToken` so consecutive
+    /// `/v1/me/*` calls from the same client do not re-hit `open.spotify.com/api/token`.
+    user_tokens: tokio::sync::Mutex<HashMap<[u8; 32], AccessToken>>,
     /// Coalesces concurrent rediscovery, so a rotated deployment triggers one
     /// fetch instead of one per in-flight request.
     refresh_lock: tokio::sync::Mutex<()>,
@@ -124,11 +227,21 @@ impl Session {
             .timeout(Duration::from_secs(30))
             .build()?;
 
+        let user_http = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .gzip(true)
+            .brotli(true)
+            .deflate(true)
+            .timeout(Duration::from_secs(30))
+            .build()?;
+
         Ok(Self {
             http,
+            user_http,
             language: language.to_string(),
             discovery: tokio::sync::RwLock::new(None),
             token: tokio::sync::Mutex::new(None),
+            user_tokens: tokio::sync::Mutex::new(HashMap::new()),
             refresh_lock: tokio::sync::Mutex::new(()),
             generation: AtomicU64::new(0),
         })
@@ -808,6 +921,468 @@ impl Session {
             .ok_or_else(|| Error::Protocol(format!("genre {id} not found")))
     }
 
+    /// Resolve a caller's `UserAuth` into a bearer `access_token`.
+    ///
+    /// When the caller supplies an `sp_dc` cookie, it is exchanged against
+    /// `open.spotify.com/api/token` using the discovered TOTP secret and cached
+    /// in memory (keyed by `SHA-256(sp_dc)`) until it expires.
+    pub async fn resolve_user_token(&self, auth: &UserAuth) -> Result<String> {
+        match auth {
+            UserAuth::AccessToken(token) => Ok(token.clone()),
+            UserAuth::SpDc(sp_dc) => {
+                let token = self.exchange_sp_dc(sp_dc).await?;
+                Ok(token.access_token)
+            }
+        }
+    }
+
+    /// Exchange a user's `sp_dc` cookie for a non-anonymous web-player `AccessToken`.
+    pub async fn exchange_sp_dc(&self, sp_dc: &str) -> Result<AccessToken> {
+        let digest = sha256_digest(sp_dc);
+
+        if let Some(cached) = self.user_tokens.lock().await.get(&digest).cloned()
+            && !cached.is_expired()
+        {
+            return Ok(cached);
+        }
+
+        self.warm().await?;
+        let _ = self.authorize().await;
+
+        let (secret, version, client_version) = {
+            let discovery = self.discovery.read().await;
+            let discovery = discovery
+                .as_ref()
+                .ok_or_else(|| Error::Protocol("session is not warmed up".into()))?;
+
+            (
+                discovery.secret.0.clone(),
+                discovery.secret.1,
+                discovery.app.client_version.clone(),
+            )
+        };
+
+        let totp = generate_totp(&decode_secret(&secret), now_secs());
+        let totp_version = version.to_string();
+
+        let response = self
+            .user_http
+            .get(routes::TOKEN)
+            .query(&[
+                ("reason", "init"),
+                ("productType", "web-player"),
+                ("totp", totp.as_str()),
+                ("totpServer", totp.as_str()),
+                ("totpVer", totp_version.as_str()),
+            ])
+            .header("cookie", format!("sp_dc={sp_dc}"))
+            .header("referer", routes::OPEN)
+            .header("accept", "application/json")
+            .send()
+            .await?;
+
+        let body: Value = ensure_ok(response).await?.json().await?;
+
+        let is_anonymous = body
+            .get("isAnonymous")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        if is_anonymous {
+            return Err(Error::Status {
+                status: 401,
+                body: "sp_dc cookie is invalid or expired".into(),
+            });
+        }
+
+        let client_id = string_field(&body, "clientId")?;
+        let access_token = string_field(&body, "accessToken")?;
+        let expires_at_ms = body
+            .get("accessTokenExpirationTimestampMs")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| Error::Protocol("token response has no expiry".into()))?;
+
+        let client_token = match self.token.lock().await.as_ref() {
+            Some(anon) if anon.client_id == client_id && !anon.client_token.is_empty() => {
+                anon.client_token.clone()
+            }
+            _ => self
+                .fetch_client_token(&client_id, &client_version)
+                .await
+                .unwrap_or_default(),
+        };
+
+        let token = AccessToken {
+            client_id,
+            access_token,
+            client_token,
+            expires_at_ms,
+            is_anonymous: false,
+        };
+
+        let mut cache = self.user_tokens.lock().await;
+        if cache.len() >= MAX_USER_TOKEN_CACHE {
+            cache.retain(|_, entry| !entry.is_expired());
+            if cache.len() >= MAX_USER_TOKEN_CACHE {
+                cache.clear();
+            }
+        }
+        cache.insert(digest, token.clone());
+
+        Ok(token)
+    }
+
+    /// Execute a persisted GraphQL operation using a caller-supplied bearer
+    /// `access_token` instead of the shared anonymous token.
+    pub async fn query_as(
+        &self,
+        access_token: &str,
+        operation: &str,
+        variables: Value,
+    ) -> Result<Value> {
+        self.authorize().await?;
+
+        let (client_token, app_version, hash) = {
+            let token = self.token.lock().await;
+            let client_token = token
+                .as_ref()
+                .map(|t| t.client_token.clone())
+                .unwrap_or_default();
+
+            let discovery = self.discovery.read().await;
+            let discovery = discovery.as_ref();
+
+            let hash = discovery
+                .and_then(|d| d.hashes.get(operation).cloned())
+                .ok_or_else(|| Error::MissingQuery(operation.to_string()))?;
+            let app_version = discovery
+                .map(|d| d.app.client_version.clone())
+                .unwrap_or_default();
+
+            (client_token, app_version, hash)
+        };
+
+        let payload = json!({
+            "variables": variables,
+            "operationName": operation,
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": hash
+                }
+            }
+        });
+
+        let response = self
+            .user_http
+            .post(routes::PATHFINDER)
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("client-token", client_token)
+            .header("spotify-app-version", app_version)
+            .header("app-platform", "WebPlayer")
+            .header("origin", "https://open.spotify.com")
+            .header("referer", "https://open.spotify.com/")
+            .header("accept", "application/json")
+            .header("accept-language", &self.language)
+            .json(&payload)
+            .send()
+            .await?;
+
+        let body: Value = ensure_ok(response).await?.json().await?;
+
+        if let Some(data) = body.get("data") {
+            return Ok(data.clone());
+        }
+
+        let errors = body
+            .get("errors")
+            .map(Value::to_string)
+            .unwrap_or_else(|| body.to_string());
+
+        Err(Error::NoData(errors))
+    }
+
+    /// Execute the first discovered operation candidate using a caller-supplied
+    /// bearer `access_token`.
+    pub async fn query_with_fallbacks_as(
+        &self,
+        access_token: &str,
+        operations: &[&str],
+        variables: &Value,
+    ) -> Result<Value> {
+        self.authorize().await?;
+
+        let generation = self.generation.load(Ordering::Acquire);
+
+        let Some(operation) = self.resolve(operations).await else {
+            if self.refresh_from(generation).await.is_err() {
+                return Err(Error::MissingQuery(operations.join("|")));
+            }
+
+            return match self.resolve(operations).await {
+                Some(operation) => self.query_as(access_token, operation, variables.clone()).await,
+                None => Err(Error::MissingQuery(operations.join("|"))),
+            };
+        };
+
+        self.query_as(access_token, operation, variables.clone()).await
+    }
+
+    /// Call `https://api.spotify.com/v1/me{subpath}` with the caller's bearer token.
+    ///
+    /// Used both as a fallback when a pathfinder operation hash is unavailable
+    /// and when the caller passes a standard Spotify Web API OAuth token.
+    async fn web_api_me(
+        &self,
+        access_token: &str,
+        subpath: &str,
+        query: &[(&str, String)],
+    ) -> Result<Value> {
+        let _ = self.authorize().await;
+
+        let (client_token, app_version) = {
+            let token = self.token.lock().await;
+            let client_token = token.as_ref().map(|t| t.client_token.clone());
+            let discovery = self.discovery.read().await;
+            let app_version = discovery.as_ref().map(|d| d.app.client_version.clone());
+            (client_token, app_version)
+        };
+
+        let mut request = self
+            .user_http
+            .get(format!("{}{subpath}", routes::WEB_API_ME))
+            .query(query)
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("app-platform", "WebPlayer")
+            .header("origin", "https://open.spotify.com")
+            .header("referer", "https://open.spotify.com/")
+            .header("accept", "application/json")
+            .header("accept-language", &self.language);
+
+        if let Some(ct) = client_token.filter(|ct| !ct.is_empty()) {
+            request = request.header("client-token", ct);
+        }
+        if let Some(ver) = app_version.filter(|ver| !ver.is_empty()) {
+            request = request.header("spotify-app-version", ver);
+        }
+
+        let response = request.send().await?;
+        Ok(ensure_ok(response).await?.json().await?)
+    }
+
+    /// Current authenticated user's profile and account details (`GET /v1/me`).
+    pub async fn me(&self, auth: &UserAuth) -> Result<UserProfile> {
+        let access_token = self.resolve_user_token(auth).await?;
+        let empty = json!({});
+
+        let (profile_res, account_res) = tokio::join!(
+            self.query_with_fallbacks_as(&access_token, &["profileAttributes"], &empty),
+            self.query_with_fallbacks_as(&access_token, &["accountAttributes"], &empty),
+        );
+
+        if let Ok(profile_data) = &profile_res
+            && let Some(mut profile) = parse_user_profile(profile_data, account_res.ok().as_ref())
+        {
+            if profile.country.is_none() || profile.product.is_none() {
+                if let Ok(web_data) = self.web_api_me(&access_token, "", &[]).await
+                    && let Some(web_profile) = parse_user_profile(&web_data, None)
+                {
+                    if profile.country.is_none() {
+                        profile.country = web_profile.country;
+                    }
+                    if profile.product.is_none() {
+                        profile.product = web_profile.product;
+                    }
+                    if profile.explicit_filter.is_none() {
+                        profile.explicit_filter = web_profile.explicit_filter;
+                    }
+                    if profile.image.is_none() {
+                        profile.image = web_profile.image;
+                    }
+                }
+            }
+            return Ok(profile);
+        }
+
+        let web_data = self.web_api_me(&access_token, "", &[]).await?;
+        parse_user_profile(&web_data, None)
+            .ok_or_else(|| Error::NoData("could not parse user profile".into()))
+    }
+
+    /// Current authenticated user's playlists (`GET /v1/me/playlists`).
+    pub async fn me_playlists(
+        &self,
+        auth: &UserAuth,
+        limit: usize,
+        offset: usize,
+    ) -> Result<UserPlaylists> {
+        let access_token = self.resolve_user_token(auth).await?;
+        let limit = limit.clamp(1, 50);
+
+        let variables = json!({
+            "filters": ["Playlists"],
+            "order": null,
+            "textFilter": "",
+            "features": ["LIKED_SONGS", "YOUR_EPISODES_V2"],
+            "limit": limit,
+            "offset": offset,
+            "flatten": false,
+            "expandedFolders": [],
+            "folderUri": null,
+            "includeFoldersWhenFlattening": true
+        });
+
+        if let Ok(data) = self
+            .query_with_fallbacks_as(&access_token, &["libraryV3"], &variables)
+            .await
+            && data.pointer("/me/libraryV3").is_some()
+        {
+            return Ok(parse_user_playlists(&data, limit, offset));
+        }
+
+        let data = self
+            .web_api_me(
+                &access_token,
+                "/playlists",
+                &[("limit", limit.to_string()), ("offset", offset.to_string())],
+            )
+            .await?;
+
+        Ok(parse_user_playlists(&data, limit, offset))
+    }
+
+    /// Current authenticated user's Liked Songs (`GET /v1/me/tracks`).
+    pub async fn me_tracks(
+        &self,
+        auth: &UserAuth,
+        limit: usize,
+        offset: usize,
+    ) -> Result<UserTracks> {
+        let access_token = self.resolve_user_token(auth).await?;
+        let limit = limit.clamp(1, 50);
+
+        let variables = json!({
+            "offset": offset,
+            "limit": limit,
+        });
+
+        if let Ok(data) = self
+            .query_with_fallbacks_as(&access_token, &["fetchLibraryTracks"], &variables)
+            .await
+            && data.pointer("/me/library/tracks").is_some()
+        {
+            return Ok(parse_user_tracks(&data, limit, offset));
+        }
+
+        let data = self
+            .web_api_me(
+                &access_token,
+                "/tracks",
+                &[("limit", limit.to_string()), ("offset", offset.to_string())],
+            )
+            .await?;
+
+        Ok(parse_user_tracks(&data, limit, offset))
+    }
+
+    /// Current authenticated user's top tracks and/or top artists (`GET /v1/me/top`).
+    ///
+    /// `range` accepts `short` (`short_term`), `medium` (`medium_term`), or
+    /// `long` (`long_term`).
+    pub async fn me_top(
+        &self,
+        auth: &UserAuth,
+        range: Option<&str>,
+        limit: usize,
+        offset: usize,
+        include_tracks: bool,
+        include_artists: bool,
+    ) -> Result<UserTop> {
+        let (label, gql_range) = match range
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            None | Some("medium") | Some("medium_term") => ("medium_term", "MEDIUM_TERM"),
+            Some("short") | Some("short_term") => ("short_term", "SHORT_TERM"),
+            Some("long") | Some("long_term") => ("long_term", "LONG_TERM"),
+            Some(_) => {
+                return Err(Error::Protocol(
+                    "range must be one of: short, medium, long".into(),
+                ));
+            }
+        };
+
+        let access_token = self.resolve_user_token(auth).await?;
+        let limit = limit.clamp(1, 50);
+
+        let variables = json!({
+            "includeTopArtists": include_artists,
+            "topArtistsInput": {
+                "offset": offset,
+                "limit": limit,
+                "sortBy": "AFFINITY",
+                "timeRange": gql_range
+            },
+            "includeTopTracks": include_tracks,
+            "topTracksInput": {
+                "offset": offset,
+                "limit": limit,
+                "sortBy": "AFFINITY",
+                "timeRange": gql_range
+            }
+        });
+
+        if let Ok(data) = self
+            .query_with_fallbacks_as(&access_token, &["userTopContent"], &variables)
+            .await
+        {
+            let mut top = parse_user_top(&data, label);
+            if !include_tracks {
+                top.tracks.clear();
+            }
+            if !include_artists {
+                top.artists.clear();
+            }
+            if !top.tracks.is_empty() || !top.artists.is_empty() {
+                return Ok(top);
+            }
+        }
+
+        let query = [
+            ("time_range", label.to_string()),
+            ("limit", limit.to_string()),
+            ("offset", offset.to_string()),
+        ];
+
+        let (tracks_res, artists_res) = tokio::join!(
+            async {
+                if include_tracks {
+                    Some(self.web_api_me(&access_token, "/top/tracks", &query).await)
+                } else {
+                    None
+                }
+            },
+            async {
+                if include_artists {
+                    Some(self.web_api_me(&access_token, "/top/artists", &query).await)
+                } else {
+                    None
+                }
+            }
+        );
+
+        let mut combined = json!({});
+        if let Some(res) = tracks_res {
+            combined["tracks"] = res?;
+        }
+        if let Some(res) = artists_res {
+            combined["artists"] = res?;
+        }
+
+        Ok(parse_user_top(&combined, label))
+    }
+
     /// Fetch every page of a paginated collection and merge the pages into the
     /// first payload, which is the shape the API already returns.
     async fn collection(
@@ -1047,6 +1622,13 @@ fn device_id() -> String {
     format!("{:016x}{:08x}", now_ms() as u64, std::process::id())
 }
 
+fn sha256_digest(value: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    hasher.finalize().into()
+}
+
 fn is_valid_language(value: &str) -> bool {
     let value = value.replace('_', "-");
 
@@ -1114,5 +1696,35 @@ mod tests {
         // Non-uppercase prefixes and short blobs must not match.
         assert!(find_isrc(b"1B1234567890").is_none());
         assert!(find_isrc(b"AB123456789").is_none());
+    }
+
+    #[test]
+    fn user_auth_distinguishes_access_tokens_and_sp_dc_cookies() {
+        let token = format!("BQ{}", "a".repeat(60));
+        assert_eq!(
+            UserAuth::parse(&format!("Bearer {token}")).unwrap(),
+            UserAuth::AccessToken(token.clone())
+        );
+        assert_eq!(
+            UserAuth::parse(&token).unwrap(),
+            UserAuth::AccessToken(token)
+        );
+
+        assert_eq!(
+            UserAuth::parse("AQB_some_sp_dc_cookie_value").unwrap(),
+            UserAuth::SpDc("AQB_some_sp_dc_cookie_value".into())
+        );
+        assert_eq!(
+            UserAuth::parse("Bearer sp_dc=AQB_cookie_val").unwrap(),
+            UserAuth::SpDc("AQB_cookie_val".into())
+        );
+        assert_eq!(
+            UserAuth::from_cookie("sp_t=123; sp_dc=AQB_from_header; sp_key=xyz").unwrap(),
+            UserAuth::SpDc("AQB_from_header".into())
+        );
+
+        assert!(UserAuth::parse("").is_err());
+        assert!(UserAuth::parse("Bearer   ").is_err());
+        assert!(UserAuth::from_sp_dc("bad cookie with spaces").is_err());
     }
 }

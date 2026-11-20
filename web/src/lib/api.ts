@@ -204,6 +204,104 @@ export function genre(id: string, signal?: AbortSignal) {
   return getJson<GenrePage>(`/v1/genre/${encodeURIComponent(id)}`, signal);
 }
 
+export interface UserProfile {
+  id: string;
+  uri: string;
+  username: string;
+  name: string;
+  image: string | null;
+  country?: string | null;
+  product?: string | null;
+  explicit_filter?: boolean | null;
+}
+
+export interface UserPlaylists {
+  total: number;
+  limit: number;
+  offset: number;
+  items: Playlist[];
+}
+
+export interface SavedTrack extends Track {
+  added_at?: string | null;
+}
+
+export interface UserTracks {
+  total: number;
+  limit: number;
+  offset: number;
+  items: SavedTrack[];
+}
+
+export interface UserTop {
+  range: string;
+  tracks: Track[];
+  artists: Artist[];
+}
+
+async function getAuthedJson<T>(
+  path: string,
+  credential: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(apiUrl(path), {
+    headers: { authorization: `Bearer ${credential.trim()}` },
+    signal,
+  });
+  const body = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const message = (body as { error?: string } | null)?.error;
+    throw new Error(message || `HTTP ${response.status}`);
+  }
+
+  return body as T;
+}
+
+export function meProfile(credential: string, signal?: AbortSignal) {
+  return getAuthedJson<UserProfile>("/v1/me", credential, signal);
+}
+
+export function mePlaylists(
+  credential: string,
+  limit = 20,
+  offset = 0,
+  signal?: AbortSignal,
+) {
+  return getAuthedJson<UserPlaylists>(
+    `/v1/me/playlists?limit=${limit}&offset=${offset}`,
+    credential,
+    signal,
+  );
+}
+
+export function meTracks(
+  credential: string,
+  limit = 20,
+  offset = 0,
+  signal?: AbortSignal,
+) {
+  return getAuthedJson<UserTracks>(
+    `/v1/me/tracks?limit=${limit}&offset=${offset}`,
+    credential,
+    signal,
+  );
+}
+
+export function meTop(
+  credential: string,
+  range: "short" | "medium" | "long" = "medium",
+  limit = 20,
+  offset = 0,
+  signal?: AbortSignal,
+) {
+  return getAuthedJson<UserTop>(
+    `/v1/me/top?range=${range}&limit=${limit}&offset=${offset}`,
+    credential,
+    signal,
+  );
+}
+
 export interface DonateInfo {
   qris: boolean;
   amounts: number[];

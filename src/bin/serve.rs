@@ -33,7 +33,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use spotifree_rs::{SearchResults, Session};
+use spotifree_rs::{SearchResults, Session, UserAuth};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -366,6 +366,32 @@ struct ChartParams {
     limit: Option<usize>,
 }
 
+#[derive(Default, Deserialize)]
+struct MeAuthParams {
+    sp_dc: Option<String>,
+    token: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct MePageParams {
+    limit: Option<usize>,
+    offset: Option<usize>,
+    sp_dc: Option<String>,
+    token: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct MeTopParams {
+    range: Option<String>,
+    time_range: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    sp_dc: Option<String>,
+    token: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -425,6 +451,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/artist/{id}", get(artist_detail))
         .route("/v1/artist/{id}/discography", get(artist_discography))
         .route("/v1/playlist/{id}", get(playlist_detail))
+        .route("/v1/me", get(me_profile))
+        .route("/v1/me/playlists", get(me_playlists))
+        .route("/v1/me/tracks", get(me_tracks))
+        .route("/v1/me/top", get(me_top))
+        .route("/v1/me/top/tracks", get(me_top_tracks))
+        .route("/v1/me/top/artists", get(me_top_artists))
         .route("/v1/donate", get(donate_info))
         .route("/v1/donate/qris", post(donate_qris))
         .route("/v1/donate/qris/{id}", get(donate_status))
@@ -1177,6 +1209,217 @@ async fn playlist_detail(
     lookup(&state, Detail::Playlist, &id).await
 }
 
+/// Extract caller-supplied Spotify user credentials (`Authorization: Bearer …`,
+/// `X-Sp-Dc`, `X-Spotify-Token`, `Cookie: sp_dc=…`, query param, or server env).
+fn extract_user_auth(
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+    query_sp_dc: Option<&str>,
+) -> Result<UserAuth, Response> {
+    let header_str = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+
+    if let Some(auth) = header_str("authorization") {
+        return UserAuth::parse(auth)
+            .map_err(|err| deny(StatusCode::UNAUTHORIZED, &err.to_string()));
+    }
+
+    if let Some(sp_dc) = header_str("x-sp-dc") {
+        return UserAuth::from_sp_dc(sp_dc)
+            .map_err(|err| deny(StatusCode::UNAUTHORIZED, &err.to_string()));
+    }
+
+    if let Some(token) = header_str("x-spotify-token") {
+        return UserAuth::parse(token)
+            .map_err(|err| deny(StatusCode::UNAUTHORIZED, &err.to_string()));
+    }
+
+    if let Some(cookie) = header_str("cookie")
+        && cookie.contains("sp_dc=")
+    {
+        return UserAuth::from_cookie(cookie)
+            .map_err(|err| deny(StatusCode::UNAUTHORIZED, &err.to_string()));
+    }
+
+    if let Some(sp_dc) = query_sp_dc.map(str::trim).filter(|value| !value.is_empty()) {
+        return UserAuth::from_sp_dc(sp_dc)
+            .map_err(|err| deny(StatusCode::BAD_REQUEST, &err.to_string()));
+    }
+
+    if let Some(token) = query_token.map(str::trim).filter(|value| !value.is_empty()) {
+        return UserAuth::parse(token)
+            .map_err(|err| deny(StatusCode::BAD_REQUEST, &err.to_string()));
+    }
+
+    if let Ok(sp_dc) = std::env::var("SP_DC").or_else(|_| std::env::var("SPOTIFY_SP_DC"))
+        && !sp_dc.trim().is_empty()
+    {
+        return UserAuth::from_sp_dc(&sp_dc)
+            .map_err(|err| deny(StatusCode::UNAUTHORIZED, &err.to_string()));
+    }
+
+    if let Ok(token) = std::env::var("SPOTIFY_ACCESS_TOKEN")
+        && !token.trim().is_empty()
+    {
+        return UserAuth::parse(&token)
+            .map_err(|err| deny(StatusCode::UNAUTHORIZED, &err.to_string()));
+    }
+
+    Err(deny(
+        StatusCode::UNAUTHORIZED,
+        "missing Spotify credentials; send Authorization: Bearer <token|sp_dc>, X-Sp-Dc: <sp_dc>, or Cookie: sp_dc=<cookie>",
+    ))
+}
+
+fn me_error_response(op: &str, error: spotifree_rs::Error) -> Response {
+    match &error {
+        spotifree_rs::Error::Status {
+            status: 401 | 403, ..
+        } => deny(
+            StatusCode::UNAUTHORIZED,
+            "invalid or expired Spotify credentials",
+        ),
+        spotifree_rs::Error::Protocol(message) => deny(StatusCode::BAD_REQUEST, message),
+        _ => {
+            eprintln!("{op} failed: {error}");
+            deny(StatusCode::BAD_GATEWAY, "upstream request failed")
+        }
+    }
+}
+
+async fn me_profile(
+    State(state): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(params): Query<MeAuthParams>,
+) -> Response {
+    let auth = match extract_user_auth(&headers, params.token.as_deref(), params.sp_dc.as_deref()) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
+
+    match state.session.me(&auth).await {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => me_error_response("me", error),
+    }
+}
+
+async fn me_playlists(
+    State(state): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(params): Query<MePageParams>,
+) -> Response {
+    let auth = match extract_user_auth(&headers, params.token.as_deref(), params.sp_dc.as_deref()) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
+
+    let limit = params.limit.unwrap_or(20).clamp(1, MAX_LIMIT);
+    let offset = params.offset.unwrap_or(0).min(MAX_OFFSET);
+
+    match state.session.me_playlists(&auth, limit, offset).await {
+        Ok(playlists) => Json(playlists).into_response(),
+        Err(error) => me_error_response("me_playlists", error),
+    }
+}
+
+async fn me_tracks(
+    State(state): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(params): Query<MePageParams>,
+) -> Response {
+    let auth = match extract_user_auth(&headers, params.token.as_deref(), params.sp_dc.as_deref()) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
+
+    let limit = params.limit.unwrap_or(20).clamp(1, MAX_LIMIT);
+    let offset = params.offset.unwrap_or(0).min(MAX_OFFSET);
+
+    match state.session.me_tracks(&auth, limit, offset).await {
+        Ok(tracks) => Json(tracks).into_response(),
+        Err(error) => me_error_response("me_tracks", error),
+    }
+}
+
+async fn me_top(
+    State(state): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(params): Query<MeTopParams>,
+) -> Response {
+    let (include_tracks, include_artists) = match params
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        None | Some("all") => (true, true),
+        Some("track") | Some("tracks") => (true, false),
+        Some("artist") | Some("artists") => (false, true),
+        Some(other) => {
+            let tracks = other.split(',').any(|p| matches!(p.trim(), "track" | "tracks"));
+            let artists = other.split(',').any(|p| matches!(p.trim(), "artist" | "artists"));
+            if !tracks && !artists {
+                return deny(
+                    StatusCode::BAD_REQUEST,
+                    "type must be one of: tracks, artists",
+                );
+            }
+            (tracks, artists)
+        }
+    };
+
+    me_top_for(state, headers, params, include_tracks, include_artists).await
+}
+
+async fn me_top_tracks(
+    State(state): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(params): Query<MeTopParams>,
+) -> Response {
+    me_top_for(state, headers, params, true, false).await
+}
+
+async fn me_top_artists(
+    State(state): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(params): Query<MeTopParams>,
+) -> Response {
+    me_top_for(state, headers, params, false, true).await
+}
+
+async fn me_top_for(
+    state: Arc<App>,
+    headers: HeaderMap,
+    params: MeTopParams,
+    include_tracks: bool,
+    include_artists: bool,
+) -> Response {
+    let auth = match extract_user_auth(&headers, params.token.as_deref(), params.sp_dc.as_deref()) {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
+
+    let limit = params.limit.unwrap_or(20).clamp(1, MAX_LIMIT);
+    let offset = params.offset.unwrap_or(0).min(MAX_OFFSET);
+    let range = params.range.as_deref().or(params.time_range.as_deref());
+
+    match state
+        .session
+        .me_top(&auth, range, limit, offset, include_tracks, include_artists)
+        .await
+    {
+        Ok(top) => Json(top).into_response(),
+        Err(error) => me_error_response("me_top", error),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Detail {
     Track,
@@ -1384,7 +1627,9 @@ async fn cors_preflight(
         );
         headers.insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("accept, content-type"),
+            HeaderValue::from_static(
+                "accept, authorization, content-type, x-sp-dc, x-spotify-token",
+            ),
         );
         headers.insert(
             header::ACCESS_CONTROL_MAX_AGE,
@@ -1482,6 +1727,9 @@ fn cache_control(path: &str) -> &'static str {
     } else if path == "/v1/donate" || path.starts_with("/v1/donate/") {
         // Payment answers are per-visitor and short-lived: never cache them.
         "no-store"
+    } else if path == "/v1/me" || path.starts_with("/v1/me/") {
+        // User-scoped data: never cache in browser or shared CDN.
+        "private, no-store"
     } else if path == "/v1/search" || path == "/v1/search/suggest" {
         "public, max-age=30, stale-while-revalidate=60"
     } else if path.starts_with("/v1/charts")
@@ -1550,6 +1798,12 @@ fn reject_unknown_api(path: &str) -> Option<Response> {
             || rest == "search/suggest"
             || rest == "charts"
             || rest == "browse"
+            || rest == "me"
+            || rest == "me/playlists"
+            || rest == "me/tracks"
+            || rest == "me/top"
+            || rest == "me/top/tracks"
+            || rest == "me/top/artists"
             || rest == "donate"
             || rest == "donate/qris"
             || rest.starts_with("donate/qris/")
@@ -1683,6 +1937,13 @@ mod tests {
         assert!(reject_unknown_api("/v1/donate/qris/123_abc").is_none());
         assert!(reject_unknown_api("/v1/donate/webhook").is_none());
         assert!(reject_unknown_api("/v1/donate/other").is_some());
+        assert!(reject_unknown_api("/v1/me").is_none());
+        assert!(reject_unknown_api("/v1/me/playlists").is_none());
+        assert!(reject_unknown_api("/v1/me/tracks").is_none());
+        assert!(reject_unknown_api("/v1/me/top").is_none());
+        assert!(reject_unknown_api("/v1/me/top/tracks").is_none());
+        assert!(reject_unknown_api("/v1/me/top/artists").is_none());
+        assert!(reject_unknown_api("/v1/me/other").is_some());
         assert!(reject_unknown_api("/v1/track/abc/credits").is_none());
         assert!(reject_unknown_api("/v1/track/abc/recommendations").is_none());
         assert!(reject_unknown_api("/v1/artist/abc/discography").is_none());
@@ -1832,6 +2093,10 @@ mod tests {
         assert_eq!(cache_control("/v1/donate"), "no-store");
         assert_eq!(cache_control("/v1/donate/qris"), "no-store");
         assert_eq!(cache_control("/v1/donate/qris/123_abc"), "no-store");
+        assert_eq!(cache_control("/v1/me"), "private, no-store");
+        assert_eq!(cache_control("/v1/me/playlists"), "private, no-store");
+        assert_eq!(cache_control("/v1/me/tracks"), "private, no-store");
+        assert_eq!(cache_control("/v1/me/top"), "private, no-store");
         assert_eq!(cache_control("/api/typo"), "no-store");
         assert_eq!(cache_control("/"), "no-cache");
         assert!(cache_control("/v1/search").starts_with("public, max-age=30"));
@@ -1842,8 +2107,49 @@ mod tests {
         assert!(cache_control("/v1/genre/x").starts_with("public, max-age=900"));
         assert!(cache_control("/v1/album/x").starts_with("public, max-age=300"));
         assert!(cache_control("/v1/track/x/credits").starts_with("public, max-age=1800"));
-        assert!(cache_control("/v1/track/x/recommendations").starts_with("public, max-age=300"));
-        assert!(cache_control("/v1/track/x/related").starts_with("public, max-age=300"));
+        assert_eq!(cache_control("/v1/track/x/recommendations").starts_with("public, max-age=300"), true);
+        assert_eq!(cache_control("/v1/track/x/related").starts_with("public, max-age=300"), true);
+    }
+
+    #[test]
+    fn extract_user_auth_accepts_headers_cookies_and_query_params() {
+        let token = format!("BQ{}", "x".repeat(60));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        assert_eq!(
+            extract_user_auth(&headers, None, None).unwrap(),
+            UserAuth::AccessToken(token)
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-sp-dc",
+            HeaderValue::from_static("AQB_cookie_from_x_header"),
+        );
+        assert_eq!(
+            extract_user_auth(&headers, None, None).unwrap(),
+            UserAuth::SpDc("AQB_cookie_from_x_header".into())
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("sp_t=abc; sp_dc=AQB_from_cookie; other=1"),
+        );
+        assert_eq!(
+            extract_user_auth(&headers, None, None).unwrap(),
+            UserAuth::SpDc("AQB_from_cookie".into())
+        );
+
+        let empty = HeaderMap::new();
+        assert_eq!(
+            extract_user_auth(&empty, None, Some("AQB_from_query")).unwrap(),
+            UserAuth::SpDc("AQB_from_query".into())
+        );
     }
 
     #[test]

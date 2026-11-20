@@ -157,6 +157,26 @@ const SEARCH_JSON = `{
 
 const ERROR_BODY = '{"error":"…"}';
 
+const ME_CURL = `# Pass your browser's sp_dc cookie (from open.spotify.com)
+curl -H "X-Sp-Dc: <your_sp_dc_cookie>" "${BASE}/v1/me"
+curl -H "X-Sp-Dc: <your_sp_dc_cookie>" "${BASE}/v1/me/playlists?limit=20"
+curl -H "X-Sp-Dc: <your_sp_dc_cookie>" "${BASE}/v1/me/tracks?limit=20"
+curl -H "X-Sp-Dc: <your_sp_dc_cookie>" "${BASE}/v1/me/top?range=short"
+
+# Or pass a Spotify bearer access_token (BQ…) or sp_dc in Authorization
+curl -H "Authorization: Bearer <token_or_sp_dc>" "${BASE}/v1/me"`;
+
+const ME_JSON = `{
+  "id": "ariblekk",
+  "uri": "spotify:user:ariblekk",
+  "username": "ariblekk",
+  "name": "Ari Haryanto",
+  "image": "https://i.scdn.co/image/…",
+  "country": "ID",
+  "product": "premium",
+  "explicit_filter": false
+}`;
+
 const SECTION_TITLE =
   "mt-14 mb-1.5 border-b-2 border-primary pb-2.5 text-[22px] font-bold tracking-[-0.01em]";
 
@@ -357,6 +377,33 @@ export default function DocsPage() {
           Curated genre page with playlists, new releases, and subcategories.
         </Endpoint>
 
+        <Endpoint path="/v1/me">
+          Authenticated user profile and account attributes (<code>id</code>,{" "}
+          <code>username</code>, <code>name</code>, <code>image</code>,{" "}
+          <code>country</code>, <code>product</code>,{" "}
+          <code>explicit_filter</code>). Pass a Spotify bearer{" "}
+          <code>access_token</code> (<code>BQ…</code>) or browser{" "}
+          <code>sp_dc</code> cookie via{" "}
+          <code>Authorization: Bearer &lt;token|sp_dc&gt;</code>,{" "}
+          <code>X-Sp-Dc: &lt;sp_dc&gt;</code>, or{" "}
+          <code>Cookie: sp_dc=&lt;cookie&gt;</code>.
+        </Endpoint>
+
+        <Endpoint path="/v1/me/playlists?limit={1-50}&offset={n}">
+          Playlists in the authenticated user's library (requires user token or{" "}
+          <code>sp_dc</code>).
+        </Endpoint>
+
+        <Endpoint path="/v1/me/tracks?limit={1-50}&offset={n}">
+          Authenticated user's Liked Songs with <code>added_at</code> timestamps
+          (requires user token or <code>sp_dc</code>).
+        </Endpoint>
+
+        <Endpoint path="/v1/me/top?range={short|medium|long}&type={tracks|artists}&limit={1-50}">
+          Authenticated user's top tracks and/or top artists by affinity (also{" "}
+          <code>/v1/me/top/tracks</code> and <code>/v1/me/top/artists</code>).
+        </Endpoint>
+
         <Endpoint path="/healthz">
           Uptime probe plus cache and session stats. Returns <code>503</code>{" "}
           while the server is still starting.
@@ -500,6 +547,61 @@ export default function DocsPage() {
         </Note>
       </Section>
 
+      <Section
+        title="User endpoints (/v1/me)"
+        lead={
+          <>
+            User-scoped endpoints inspect the caller's own Spotify account,
+            saved playlists, Liked Songs, and top tracks/artists. They accept
+            either a browser <code>sp_dc</code> cookie from{" "}
+            <code>open.spotify.com</code> (exchanged automatically via Spotify's
+            TOTP token endpoint) or a bearer <code>access_token</code> (
+            <code>BQ…</code>).
+          </>
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <Th>Header / Param</Th>
+              <Th>Format</Th>
+              <Th>Notes</Th>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <TableRow>
+              <TdMono>Authorization</TdMono>
+              <TdMono>Bearer &lt;token|sp_dc&gt;</TdMono>
+              <Td>
+                Accepts a Spotify <code>BQ…</code> access token or raw{" "}
+                <code>sp_dc</code> cookie value
+              </Td>
+            </TableRow>
+            <TableRow>
+              <TdMono>X-Sp-Dc</TdMono>
+              <TdMono>&lt;sp_dc&gt;</TdMono>
+              <Td>
+                Explicit <code>sp_dc</code> cookie header
+              </Td>
+            </TableRow>
+            <TableRow>
+              <TdMono>Cookie</TdMono>
+              <TdMono>sp_dc=&lt;value&gt;</TdMono>
+              <Td>Standard HTTP cookie header</Td>
+            </TableRow>
+          </TableBody>
+        </Table>
+
+        <Code>{ME_CURL}</Code>
+        <Code>{ME_JSON}</Code>
+        <Note title="Private and never cached by CDNs.">
+          Every <code>/v1/me*</code> response carries{" "}
+          <code>Cache-Control: private, no-store</code> and runs on an isolated
+          cookie-less HTTP client so user credentials never leak into the shared
+          anonymous session.
+        </Note>
+      </Section>
+
       <Section title="Errors">
         <Table>
           <TableHeader>
@@ -514,6 +616,14 @@ export default function DocsPage() {
               <TdMono>400</TdMono>
               <TdMono>{ERROR_BODY}</TdMono>
               <Td>Bad param, or an id that is not a Spotify id</Td>
+            </TableRow>
+            <TableRow>
+              <TdMono>401</TdMono>
+              <TdMono>{ERROR_BODY}</TdMono>
+              <Td>
+                Missing, invalid, or expired Spotify user token /{" "}
+                <code>sp_dc</code> cookie on <code>/v1/me*</code>
+              </Td>
             </TableRow>
             <TableRow>
               <TdMono>403</TdMono>

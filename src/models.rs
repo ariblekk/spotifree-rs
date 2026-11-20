@@ -136,6 +136,57 @@ pub struct GenreItem {
     pub artists: Option<Vec<String>>,
 }
 
+/// Authenticated user profile and account attributes (`GET /v1/me`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UserProfile {
+    pub id: String,
+    pub uri: String,
+    pub username: String,
+    pub name: String,
+    pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explicit_filter: Option<bool>,
+}
+
+/// Paginated list of playlists from the authenticated user's library (`GET /v1/me/playlists`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UserPlaylists {
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub items: Vec<Playlist>,
+}
+
+/// A liked track in the authenticated user's library.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SavedTrack {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<String>,
+    #[serde(flatten)]
+    pub track: Track,
+}
+
+/// Paginated list of the authenticated user's Liked Songs (`GET /v1/me/tracks`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UserTracks {
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub items: Vec<SavedTrack>,
+}
+
+/// Authenticated user's top tracks and artists (`GET /v1/me/top`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UserTop {
+    pub range: String,
+    pub tracks: Vec<Track>,
+    pub artists: Vec<Artist>,
+}
+
 /// Parse a `countryHubsPage` payload into typed charts.
 pub fn parse_charts(country: &str, data: &Value) -> Charts {
     let mut charts = Charts {
@@ -483,6 +534,240 @@ fn id_from_uri(uri: &str) -> String {
     uri.rsplit(':').next().unwrap_or(uri).to_string()
 }
 
+/// Parse user profile and account attributes from pathfinder (`profileAttributes` +
+/// `accountAttributes`) or Spotify Web API (`/v1/me`).
+pub fn parse_user_profile(profile_data: &Value, account_data: Option<&Value>) -> Option<UserProfile> {
+    let profile = profile_data
+        .pointer("/me/profile")
+        .or_else(|| profile_data.get("profile"))
+        .unwrap_or(profile_data);
+
+    let account = account_data
+        .and_then(|data| data.pointer("/me/account").or_else(|| data.get("account")).or(Some(data)))
+        .or_else(|| profile_data.pointer("/me/account"));
+
+    let uri = profile
+        .get("uri")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            profile
+                .get("id")
+                .or_else(|| profile.get("username"))
+                .and_then(Value::as_str)
+                .map(|id| format!("spotify:user:{id}"))
+        })?;
+
+    let id = profile
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| id_from_uri(&uri));
+
+    let username = profile
+        .get("username")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| id.clone());
+
+    let name = profile
+        .get("name")
+        .or_else(|| profile.get("display_name"))
+        .and_then(Value::as_str)
+        .unwrap_or(&username)
+        .to_string();
+
+    let image = find_avatar(profile).or_else(|| find_image(profile));
+
+    let country = account
+        .and_then(|acc| acc.get("country"))
+        .or_else(|| profile.get("country"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let product = account
+        .and_then(|acc| acc.get("product"))
+        .or_else(|| profile.get("product"))
+        .and_then(Value::as_str)
+        .map(|p| p.to_ascii_lowercase());
+
+    let explicit_filter = account
+        .and_then(|acc| {
+            acc.pointer("/explicitContent/filterEnabled")
+                .or_else(|| acc.pointer("/explicit_content/filter_enabled"))
+        })
+        .or_else(|| profile.pointer("/explicit_content/filter_enabled"))
+        .and_then(Value::as_bool);
+
+    Some(UserProfile {
+        id,
+        uri,
+        username,
+        name,
+        image,
+        country,
+        product,
+        explicit_filter,
+    })
+}
+
+/// Parse user playlists from pathfinder (`libraryV3`) or Web API (`/v1/me/playlists`).
+pub fn parse_user_playlists(data: &Value, limit: usize, offset: usize) -> UserPlaylists {
+    let lib = data
+        .pointer("/me/libraryV3")
+        .or_else(|| data.get("libraryV3"))
+        .unwrap_or(data);
+
+    let raw_items = lib
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut items = Vec::new();
+    for entry in &raw_items {
+        let candidate = entry
+            .pointer("/item/data")
+            .or_else(|| entry.get("item"))
+            .or_else(|| entry.get("data"))
+            .unwrap_or(entry);
+
+        let typename = candidate
+            .get("__typename")
+            .or_else(|| candidate.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let uri = candidate
+            .get("uri")
+            .or_else(|| entry.pointer("/item/_uri"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if !typename.eq_ignore_ascii_case("playlist") && !uri.contains(":playlist:") {
+            continue;
+        }
+
+        if let Some(playlist) = parse_playlist(candidate) {
+            items.push(playlist);
+        }
+    }
+
+    let total = lib
+        .get("totalCount")
+        .or_else(|| lib.get("total"))
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(items.len());
+
+    UserPlaylists {
+        total,
+        limit,
+        offset,
+        items,
+    }
+}
+
+/// Parse user's Liked Songs from pathfinder (`fetchLibraryTracks`) or Web API (`/v1/me/tracks`).
+pub fn parse_user_tracks(data: &Value, limit: usize, offset: usize) -> UserTracks {
+    let tracks_node = data
+        .pointer("/me/library/tracks")
+        .or_else(|| data.pointer("/library/tracks"))
+        .unwrap_or(data);
+
+    let raw_items = tracks_node
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut items = Vec::new();
+    for entry in &raw_items {
+        let added_at = entry
+            .pointer("/addedAt/isoString")
+            .or_else(|| entry.get("added_at"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        let track_node = entry
+            .pointer("/track/data")
+            .or_else(|| entry.get("track"))
+            .unwrap_or(entry);
+
+        let mut normalized = track_node.clone();
+        if normalized.get("uri").and_then(Value::as_str).is_none()
+            && let Some(fallback_uri) = entry
+                .pointer("/track/_uri")
+                .or_else(|| entry.pointer("/track/uri"))
+                .and_then(Value::as_str)
+        {
+            normalized["uri"] = Value::String(fallback_uri.to_string());
+        }
+
+        if let Some(track) = parse_track(&normalized) {
+            items.push(SavedTrack { added_at, track });
+        }
+    }
+
+    let total = tracks_node
+        .get("totalCount")
+        .or_else(|| tracks_node.get("total"))
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(items.len());
+
+    UserTracks {
+        total,
+        limit,
+        offset,
+        items,
+    }
+}
+
+/// Parse top tracks and artists from pathfinder (`userTopContent`) or Web API (`/v1/me/top/*`).
+pub fn parse_user_top(data: &Value, range: &str) -> UserTop {
+    let tracks_items = data
+        .pointer("/me/profile/topTracks/items")
+        .or_else(|| data.pointer("/me/topTracks/items"))
+        .or_else(|| data.pointer("/topTracks/items"))
+        .or_else(|| data.pointer("/tracks/items"))
+        .and_then(Value::as_array);
+
+    let artists_items = data
+        .pointer("/me/profile/topArtists/items")
+        .or_else(|| data.pointer("/me/topArtists/items"))
+        .or_else(|| data.pointer("/topArtists/items"))
+        .or_else(|| data.pointer("/artists/items"))
+        .and_then(Value::as_array);
+
+    let tracks = tracks_items
+        .map(|list| list.iter().map(payload).filter_map(parse_track).collect())
+        .unwrap_or_default();
+
+    let artists = artists_items
+        .map(|list| list.iter().map(payload).filter_map(parse_artist).collect())
+        .unwrap_or_default();
+
+    UserTop {
+        range: range.to_string(),
+        tracks,
+        artists,
+    }
+}
+
+fn find_avatar(profile: &Value) -> Option<String> {
+    let sources = profile
+        .pointer("/avatar/sources")
+        .or_else(|| profile.get("images"))
+        .and_then(Value::as_array)?;
+
+    sources
+        .iter()
+        .max_by_key(|source| source.get("width").and_then(Value::as_u64).unwrap_or(0))
+        .and_then(|source| source.get("url"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 fn parse_track(value: &Value) -> Option<Track> {
     let uri = value.get("uri")?.as_str()?.to_string();
     let name = value.get("name")?.as_str()?.to_string();
@@ -494,11 +779,13 @@ fn parse_track(value: &Value) -> Option<Track> {
         artists: artist_names(value),
         album: value
             .pointer("/albumOfTrack/name")
+            .or_else(|| value.pointer("/album/name"))
             .and_then(Value::as_str)
             .map(str::to_string),
         duration_ms: value
             .pointer("/duration/totalMilliseconds")
             .or_else(|| value.pointer("/trackDuration/totalMilliseconds"))
+            .or_else(|| value.get("duration_ms"))
             .and_then(Value::as_u64),
         image: find_image(value),
     })
@@ -545,6 +832,7 @@ fn parse_playlist(value: &Value) -> Option<Playlist> {
 fn artist_names(value: &Value) -> Vec<String> {
     value
         .pointer("/artists/items")
+        .or_else(|| value.get("artists"))
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(person_name).collect())
         .unwrap_or_default()
@@ -561,8 +849,9 @@ fn person_name(value: &Value) -> Option<String> {
 fn owner_name(value: &Value) -> Option<String> {
     value
         .pointer("/ownerV2/data/name")
+        .or_else(|| value.pointer("/owner/name"))
+        .or_else(|| value.pointer("/owner/display_name"))
         .and_then(Value::as_str)
-        .or_else(|| value.pointer("/owner/name").and_then(Value::as_str))
         .map(str::to_string)
 }
 
@@ -764,5 +1053,155 @@ mod tests {
         assert_eq!(page.sections[0].items[0].title, "Anime Now");
         assert_eq!(page.sections[0].items[0].followers, Some(1500000));
         assert_eq!(page.sections[0].items[0].href, "/playlist/37i9dQZF1DX6uhv2X9VqT5");
+    }
+
+    #[test]
+    fn parses_user_profile_from_pathfinder_and_web_api() {
+        let profile = json!({
+            "me": {
+                "profile": {
+                    "uri": "spotify:user:ariblekk",
+                    "username": "ariblekk",
+                    "name": "Ari Haryanto",
+                    "avatar": {
+                        "sources": [
+                            {"url": "https://i.scdn.co/image/small", "width": 64},
+                            {"url": "https://i.scdn.co/image/large", "width": 300}
+                        ]
+                    }
+                }
+            }
+        });
+        let account = json!({
+            "me": {
+                "account": {
+                    "country": "ID",
+                    "product": "PREMIUM",
+                    "explicitContent": {"filterEnabled": false}
+                }
+            }
+        });
+
+        let parsed = parse_user_profile(&profile, Some(&account)).unwrap();
+        assert_eq!(parsed.id, "ariblekk");
+        assert_eq!(parsed.uri, "spotify:user:ariblekk");
+        assert_eq!(parsed.username, "ariblekk");
+        assert_eq!(parsed.name, "Ari Haryanto");
+        assert_eq!(parsed.image.as_deref(), Some("https://i.scdn.co/image/large"));
+        assert_eq!(parsed.country.as_deref(), Some("ID"));
+        assert_eq!(parsed.product.as_deref(), Some("premium"));
+        assert_eq!(parsed.explicit_filter, Some(false));
+
+        let web_api = json!({
+            "id": "ariblekk",
+            "uri": "spotify:user:ariblekk",
+            "display_name": "Ari Haryanto",
+            "country": "ID",
+            "product": "free",
+            "explicit_content": {"filter_enabled": true},
+            "images": [{"url": "https://i.scdn.co/image/avatar", "width": 300}]
+        });
+        let parsed_web = parse_user_profile(&web_api, None).unwrap();
+        assert_eq!(parsed_web.id, "ariblekk");
+        assert_eq!(parsed_web.name, "Ari Haryanto");
+        assert_eq!(parsed_web.product.as_deref(), Some("free"));
+        assert_eq!(parsed_web.explicit_filter, Some(true));
+    }
+
+    #[test]
+    fn parses_user_playlists_tracks_and_top() {
+        let lib = json!({
+            "me": {
+                "libraryV3": {
+                    "totalCount": 2,
+                    "items": [
+                        {
+                            "item": {
+                                "data": {
+                                    "__typename": "Playlist",
+                                    "uri": "spotify:playlist:pl1",
+                                    "name": "Late Night Coding",
+                                    "ownerV2": {"data": {"name": "Ari"}},
+                                    "images": {"items": [{"sources": [{"url": "https://i.scdn.co/image/pl1"}]}]}
+                                }
+                            }
+                        },
+                        {
+                            "item": {
+                                "data": {
+                                    "__typename": "Folder",
+                                    "uri": "spotify:user:ari:folder:1",
+                                    "name": "Ignored Folder"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+        let playlists = parse_user_playlists(&lib, 20, 0);
+        assert_eq!(playlists.total, 2);
+        assert_eq!(playlists.items.len(), 1);
+        assert_eq!(playlists.items[0].id, "pl1");
+        assert_eq!(playlists.items[0].name, "Late Night Coding");
+        assert_eq!(playlists.items[0].owner.as_deref(), Some("Ari"));
+
+        let saved = json!({
+            "me": {
+                "library": {
+                    "tracks": {
+                        "totalCount": 1,
+                        "items": [{
+                            "addedAt": {"isoString": "2026-11-20T10:00:00Z"},
+                            "track": {
+                                "_uri": "spotify:track:tr1",
+                                "data": {
+                                    "name": "Sesi Potret",
+                                    "artists": {"items": [{"profile": {"name": "enau"}}]},
+                                    "albumOfTrack": {"name": "Sesi Potret"},
+                                    "duration": {"totalMilliseconds": 210000}
+                                }
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+        let tracks = parse_user_tracks(&saved, 20, 0);
+        assert_eq!(tracks.total, 1);
+        assert_eq!(tracks.items.len(), 1);
+        assert_eq!(tracks.items[0].track.id, "tr1");
+        assert_eq!(tracks.items[0].added_at.as_deref(), Some("2026-11-20T10:00:00Z"));
+        assert_eq!(tracks.items[0].track.artists, vec!["enau"]);
+
+        let top_data = json!({
+            "me": {
+                "profile": {
+                    "topTracks": {
+                        "items": [{
+                            "data": {
+                                "uri": "spotify:track:top1",
+                                "name": "Yellow",
+                                "artists": {"items": [{"profile": {"name": "Coldplay"}}]}
+                            }
+                        }]
+                    },
+                    "topArtists": {
+                        "items": [{
+                            "data": {
+                                "uri": "spotify:artist:art1",
+                                "profile": {"name": "Coldplay"}
+                            }
+                        }]
+                    }
+                }
+            }
+        });
+        let top = parse_user_top(&top_data, "medium_term");
+        assert_eq!(top.range, "medium_term");
+        assert_eq!(top.tracks.len(), 1);
+        assert_eq!(top.tracks[0].name, "Yellow");
+        assert_eq!(top.artists.len(), 1);
+        assert_eq!(top.artists[0].name, "Coldplay");
     }
 }

@@ -26,6 +26,8 @@ cargo run -- search "Blinding Lights" --limit 3
 cargo run -- search lofi --limit 5 --json
 cargo run -- token
 cargo run -- query searchDesktop '{"searchTerm":"lofi","offset":0,"limit":5}'
+cargo run -- me profile --auth "<sp_dc_or_access_token>"
+cargo run -- me top --range short --auth "<sp_dc_or_access_token>"
 ```
 
 ## Library
@@ -99,6 +101,10 @@ all-in-one image and the Vite dev proxy both need.
 | `GET /v1/browse` | browse / explore categories list (`id`, `title`, `color`, `image_url`) |
 | `GET /v1/genre/{id}` | curated genre page with sections (`playlists`, `releases`, subgenres) |
 | `GET /v1/charts/{id\|global}?top=<daily\|alltime>` | 50 ranked rows + `trending` / `popular_albums` / `popular_artists` |
+| `GET /v1/me` | authenticated user profile (`id`, `username`, `name`, `image`, `country`, `product`, `explicit_filter`) |
+| `GET /v1/me/playlists?limit=<1-50>&offset=<n>` | authenticated user's saved playlists (`total`, `items`) |
+| `GET /v1/me/tracks?limit=<1-50>&offset=<n>` | authenticated user's Liked Songs (`total`, `items` with `added_at`) |
+| `GET /v1/me/top?range=<short\|medium\|long>&type=<tracks\|artists>` | authenticated user's top tracks and/or top artists (also `/v1/me/top/tracks`, `/v1/me/top/artists`) |
 | `GET /v1/donate` | `{ qris, amounts, max }` — whether QRIS is configured, plus presets |
 | `POST /v1/donate/qris` `{"amount":25000}` | dynamic QRIS bill: `qris_id`, `amount`, `qris_code`, `expires_at` |
 | `GET /v1/donate/qris/{id}` | `{ paid, status }` for polling a bill |
@@ -107,9 +113,13 @@ all-in-one image and the Vite dev proxy both need.
 | `GET /`, `/docs`, `/charts`, `/donate`, `/detail?...` | SPA pages |
 
 `type` accepts `track,artist,album,playlist` and filters sections server-side.
-Detail endpoints return Spotify's object as-is. Unknown or failed upstream calls
-answer `502`, bad params `400`, unknown `/v1/*` paths `404` — all as
-`{"error": "..."}`.
+Detail endpoints return Spotify's object as-is. `/v1/me*` endpoints accept a
+user's Spotify `access_token` (`BQ…`) or browser `sp_dc` cookie via
+`Authorization: Bearer <token|sp_dc>`, `X-Sp-Dc: <sp_dc>`, or
+`Cookie: sp_dc=<cookie>` (or `SP_DC` / `SPOTIFY_ACCESS_TOKEN` on a self-hosted
+instance) and send `Cache-Control: private, no-store`. Unknown or failed upstream
+calls answer `502`, missing/expired user credentials `401`, bad params `400`,
+unknown `/v1/*` paths `404` — all as `{"error": "..."}`.
 
 ## Configuration
 
@@ -125,6 +135,7 @@ on a private network.
 | `FRONTEND_DIR` | `web/dist` | Directory holding the built frontend (unused when it is not present) |
 | `QRIS_BASE_URL` | unset | Payment gateway base URL, e.g. `https://qris.blek.my.id`. Enables the QRIS card on `/donate` |
 | `QRIS_API_KEY` | unset | Gateway application key (`gopay_live_...`). Server-side only — it never reaches the browser, and doubles as the webhook HMAC secret |
+| `SP_DC` / `SPOTIFY_ACCESS_TOKEN` | unset | Optional default user credential for `/v1/me*` on a single-user self-hosted instance when the request omits auth headers |
 
 Every response gets `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy:
 no-referrer` and a restrictive CSP; upstream error bodies are never returned.
